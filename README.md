@@ -16,17 +16,6 @@ Linux's OOM killer picks victims by a numeric `oom_score` that ignores user inte
 
 **Conversational OOM Killer** replaces that mechanism with a userspace daemon driven by a one-paragraph, user-written priority policy. On memory pressure (detected via PSI), the daemon collects `/proc` process metadata, asks Upstage Solar Pro 3 to pick victims under the user's policy, validates the response against a hard-coded safety ruleset (never PID 1, systemd, sshd, or the daemon itself), and dispatches `SIGTERM` → `SIGKILL`.
 
-
-## 📚 Documentation
-
-| Document | Content |
-|----------|---------|
-| [Problem Statement](docs/01_problem.md) | Why this project exists |
-| [Architecture](docs/02_architecture.md) | Component overview and data flow |
-| [OS Concepts](docs/03_os_concepts.md) | OS concept → code mapping |
-| [Evaluation Design](docs/04_evaluation_design.md) | How we measure success |
-| [xv6 Porting Design](docs/05_xv6_porting.md) | Sketch of porting to xv6-riscv |
-
 ---
 
 ## 🗓 Project Status
