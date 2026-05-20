@@ -8,6 +8,7 @@
 #include "spinlock.h"
 #include "riscv.h"
 #include "defs.h"
+#include "proc.h"
 
 void freerange(void *pa_start, void *pa_end);
 
@@ -59,6 +60,7 @@ kfree(void *pa)
   acquire(&kmem.lock);
   r->next = kmem.freelist;
   kmem.freelist = r;
+  wakeup(&kmem);
   release(&kmem.lock);
 }
 
@@ -69,9 +71,30 @@ void *
 kalloc(void)
 {
   struct run *r;
+  struct proc *p = myproc();
 
   acquire(&kmem.lock);
   r = kmem.freelist;
+
+  if(!r && p) {
+    acquire(&tickslock);
+    p->last_stall_start = ticks;
+    release(&tickslock);
+
+    while(!r) {
+      sleep(&kmem, &kmem.lock);
+      r = kmem.freelist;
+      if(p->killed) {
+        release(&kmem.lock);
+        return 0;
+      }
+    }
+
+    acquire(&tickslock);
+    p->mem_stall_ticks += (ticks - p->last_stall_start);
+    release(&tickslock);
+  }
+
   if(r)
     kmem.freelist = r->next;
   release(&kmem.lock);

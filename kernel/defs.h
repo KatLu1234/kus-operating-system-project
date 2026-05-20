@@ -101,6 +101,10 @@ void            yield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
+void            update_psi(void);
+void            get_psi_stats(struct psi_data*);
+extern uint64   some_avg10;
+extern uint64   full_avg10;
 
 // swtch.S
 void            swtch(struct context*, struct context*);
