@@ -33,11 +33,15 @@ import json
 
 # .env 파일에서 API 키를 자동으로 읽어온다.
 # (python-dotenv가 설치돼 있으면 사용, 없으면 그냥 환경변수에서 읽음)
+import os
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    # 이 스크립트(helper.py)와 같은 폴더의 .env를 확실히 찾아서 읽는다
+    _here = os.path.dirname(os.path.abspath(__file__))
+    load_dotenv(os.path.join(_here, ".env"))
 except ImportError:
     pass
+
 
 # ──────────────────────────────────────────────────────────
 # 설정
