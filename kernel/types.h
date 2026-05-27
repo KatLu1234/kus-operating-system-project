@@ -8,3 +8,8 @@ typedef unsigned int  uint32;
 typedef unsigned long uint64;
 
 typedef uint64 pde_t;
+
+struct psi_data {
+  uint64 some_avg10;
+  uint64 full_avg10;
+};
