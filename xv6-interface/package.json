@@ -1,0 +1,18 @@
+{
+  "name": "xv6-interface",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron front-end for the xv6 OS project (eDEX-UI matrix theme).",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:dev": "electron . --enable-logging"
+  },
+  "dependencies": {
+    "pidtree": "^0.6.0",
+    "pidusage": "^3.0.2"
+  },
+  "devDependencies": {
+    "electron": "^32.2.0"
+  }
+}

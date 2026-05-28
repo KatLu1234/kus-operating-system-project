@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; script-src 'self'" />
+    <title>xv6 // interface</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="hud">
+      <section class="panel panel-left">
+        <div class="panel-title">// XV6 METRICS</div>
+        <div class="panel-body metrics-body">
+          <div class="brand">
+            <span class="bracket">[</span>
+            XV6 <span class="dim">//</span> INTERFACE
+            <span class="bracket">]</span>
+          </div>
+
+          <ul class="status-list">
+            <li><span>CLOCK</span><b id="clock">--:--:--</b></li>
+            <li><span>UPTIME</span><b id="stat-uptime">00:00:00</b></li>
+            <li><span>STATE</span><b id="stat-state" class="ok">BOOTING</b></li>
+            <li><span>PROCS</span><b id="stat-procs">0</b></li>
+          </ul>
+
+          <div class="metric">
+            <div class="metric-head"><label>CPU</label><b id="cpu-value">--%</b></div>
+            <canvas class="metric-graph" id="cpu-graph" width="240" height="48"></canvas>
+          </div>
+
+          <div class="metric">
+            <div class="metric-head"><label>MEMORY (RSS)</label><b id="mem-value">-- MB</b></div>
+            <canvas class="metric-graph" id="mem-graph" width="240" height="48"></canvas>
+          </div>
+
+          <div class="metric">
+            <div class="metric-head"><label>STDOUT (B/s)</label><b id="io-value">-- B/s</b></div>
+            <canvas class="metric-graph" id="io-graph" width="240" height="48"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel panel-center">
+        <div class="panel-title">// CONSOLE — make clean &amp;&amp; make qemu</div>
+        <pre class="console" id="console"></pre>
+        <form class="stdin-row" id="stdin-form" autocomplete="off">
+          <span class="stdin-prompt">$</span>
+          <input id="stdin-input" type="text" spellcheck="false"
+                 placeholder="type into xv6 — Enter to send" />
+        </form>
+      </section>
+
+      <section class="panel panel-right">
+        <div class="panel-title">
+          <span>// PROCESS &amp; OOM</span>
+          <span class="title-meta" id="llm-meta">disconnected</span>
+        </div>
+        <div class="panel-body right-body">
+          <div class="subhead">PROCESS</div>
+          <ul class="status-list">
+            <li><span>CMD</span><b id="proc-cmd">--</b></li>
+            <li><span>CWD</span><b id="proc-cwd" title="">--</b></li>
+            <li><span>ROOT PID</span><b id="proc-pid">--</b></li>
+            <li><span>STARTED</span><b id="proc-started">--</b></li>
+            <li><span>EXIT</span><b id="proc-exit">--</b></li>
+          </ul>
+
+          <div class="subhead">OOM</div>
+          <ul class="status-list">
+            <li><span>COOMD</span><b id="coomd-state">--</b></li>
+            <li><span>COOMD PID</span><b id="coomd-pid">--</b></li>
+            <li><span>THRESHOLD</span><b id="oom-threshold">--</b></li>
+            <li><span>PSI some/avg10</span><b id="psi-some-10">--</b></li>
+            <li><span>PSI some/avg60</span><b id="psi-some-60">--</b></li>
+            <li><span>PSI full/avg10</span><b id="psi-full-10">--</b></li>
+            <li><span>LAST CALL</span><b id="oom-last">--</b></li>
+            <li><span>VICTIMS</span><b id="oom-victims">0</b></li>
+          </ul>
+
+          <div class="subhead">EVENTS</div>
+          <pre class="oom-log" id="oom-log">(no OOM events yet)</pre>
+        </div>
+      </section>
+
+      <section class="panel panel-bottom">
+        <div class="panel-title">// SYSTEM</div>
+        <div class="panel-body footer-row">
+          <span>STATUS <b class="ok" id="foot-status">BOOTING</b></span>
+          <span>QEMU <b id="foot-pid">--</b></span>
+          <span>COOMD <b id="foot-coomd">--</b></span>
+          <span>LLM <b id="foot-llm">--</b></span>
+          <span>ELECTRON <b id="foot-electron">--</b></span>
+          <span class="dim">[ESC] quit</span>
+          <span class="footer-actions">
+            <button id="btn-restart">RESTART</button>
+            <button id="btn-stop">STOP</button>
+          </span>
+        </div>
+      </section>
+    </main>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
