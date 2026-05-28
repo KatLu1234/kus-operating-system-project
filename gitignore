@@ -1,0 +1,29 @@
+# xv6 build artifacts
+*~
+_*
+*.o
+*.d
+*.asm
+*.sym
+*.img
+vectors.S
+bootblock
+entryother
+initcode
+initcode.out
+kernelmemfs
+mkfs
+kernel/kernel
+user/usys.S
+
+# coomd build artifacts
+coomd/bin/
+coomd/daemon/*.o
+
+# Editor / debugger
+.gdbinit
+TAGS
+
+# Secrets
+.env
+.env.local
