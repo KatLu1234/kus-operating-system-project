@@ -1,0 +1,4 @@
+# Python dependencies for coomd LLM Helper (R3)
+# Install with: pip install -r requirements.txt
+
+openai>=1.0.0
