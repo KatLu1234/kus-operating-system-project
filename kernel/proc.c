@@ -15,6 +15,11 @@ struct proc *initproc;
 int nextpid = 1;
 struct spinlock pid_lock;
 
+// PSI Statistics (Fixed-point: value * 1024)
+uint64 some_avg10 = 0;
+uint64 full_avg10 = 0;
+struct spinlock psi_lock;
+
 extern void forkret(void);
 static void freeproc(struct proc *p);
 
@@ -51,11 +56,67 @@ procinit(void)
   
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
+  initlock(&psi_lock, "psi_lock");
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
       p->state = UNUSED;
       p->kstack = KSTACK((int) (p - proc));
   }
+}
+
+extern struct {
+  struct spinlock lock;
+  struct run *freelist;
+} kmem;
+
+// Update PSI metrics based on current process states.
+// Called from clockintr() on CPU 0.
+void
+update_psi()
+{
+  struct proc *p;
+  int some = 0;
+  int runnable_or_running = 0;
+  int stalled = 0;
+  int total_active = 0;
+
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->state != UNUSED && p->state != ZOMBIE) {
+      total_active++;
+      if(p->state == SLEEPING && p->chan == &kmem) {
+        stalled++;
+      } else if(p->state == RUNNABLE || p->state == RUNNING) {
+        runnable_or_running++;
+      }
+    }
+    release(&p->lock);
+  }
+
+  if(stalled > 0) some = 1;
+
+  // FULL: At least one is stalled, and NO one is runnable/running
+  int full = (stalled > 0 && runnable_or_running == 0) ? 1 : 0;
+
+  // Alpha for 10s average (approximate)
+  // tau(n+1) = alpha * t(n) + (1-alpha) * tau(n)
+  // Using fixed point: alpha = 1/100 (assuming 100 ticks per sec)
+  // tau = (t * 1024 + 99 * tau) / 100
+  
+  acquire(&psi_lock);
+  some_avg10 = (some * 1024 + 99 * some_avg10) / 100;
+  full_avg10 = (full * 1024 + 99 * full_avg10) / 100;
+  release(&psi_lock);
+}
+
+// Copy PSI statistics into the provided structure.
+void
+get_psi_stats(struct psi_data *pd)
+{
+  acquire(&psi_lock);
+  pd->some_avg10 = some_avg10;
+  pd->full_avg10 = full_avg10;
+  release(&psi_lock);
 }
 
 // Must be called with interrupts disabled,
@@ -125,8 +186,12 @@ found:
   p->pid = allocpid();
   p->state = USED;
 
+  // Release lock to allow kalloc to sleep without causing PSI panic.
+  release(&p->lock);
+
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
+    acquire(&p->lock);
     freeproc(p);
     release(&p->lock);
     return 0;
@@ -135,10 +200,13 @@ found:
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
+    acquire(&p->lock);
     freeproc(p);
     release(&p->lock);
     return 0;
   }
+
+  acquire(&p->lock);
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -268,13 +336,19 @@ kfork(void)
     return -1;
   }
 
+  // Release lock to allow uvmcopy (kalloc) to sleep.
+  release(&np->lock);
+
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+    acquire(&np->lock);
     freeproc(np);
     release(&np->lock);
     return -1;
   }
   np->sz = p->sz;
+
+  acquire(&np->lock);
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);

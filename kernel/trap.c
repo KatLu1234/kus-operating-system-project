@@ -169,6 +169,7 @@ clockintr()
     ticks++;
     wakeup(&ticks);
     release(&tickslock);
+    update_psi();
   }
 
   // ask for the next timer interrupt. this also clears

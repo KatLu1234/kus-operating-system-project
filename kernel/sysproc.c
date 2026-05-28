@@ -107,3 +107,18 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_get_mem_pressure(void)
+{
+  uint64 addr;
+  struct psi_data pd;
+
+  argaddr(0, &addr);
+  get_psi_stats(&pd);
+
+  if(either_copyout(1, addr, &pd, sizeof(pd)) < 0)
+    return -1;
+
+  return 0;
+}
