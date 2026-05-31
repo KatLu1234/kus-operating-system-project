@@ -27,3 +27,10 @@ TAGS
 # Secrets
 .env
 .env.local
+
+# Backup files
+*.backup
+*.backup2
+
+# xv6 build artifacts
+fs.img
