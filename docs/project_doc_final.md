@@ -1,163 +1,163 @@
 # Conversational OOM Killer
 
-운영체제 00분반 · Team 06
+Operating Systems, Section 00 · Team 06
 Direction B — LLM for OS
 LLM Backend: Upstage Solar Pro 3
 
 ---
 
-## 1. 팀 구성
+## 1. Team
 
-| 학번 | 이름 | 역할 |
-|------|------|------|
-| 2021270017 | 노혁준 (조장) | R5 — 문서 / 평가 / LLM Helper |
-| 2022270635 | 백선하 | R4 — 통합 데몬 |
-| 2024270639 | 강규현 | R1 — PSI Monitor |
-| 2017271134 | 이승원 | R3 — LLM Helper |
-| 2023270626 | 이유진 | R2 — /proc Reader |
+| Student ID | Name | Role |
+|------------|------|------|
+| 2021270017 | Roh Hyukjun (Leader) | R5 — Documentation / Evaluation / LLM Helper |
+| 2022270635 | Baek Seonha | R4 — Integration Daemon |
+| 2024270639 | Kang Gyuhyeon | R1 — PSI Monitor |
+| 2017271134 | Lee Seungwon | R3 — LLM Helper |
+| 2023270626 | Lee Yujin | R2 — /proc Reader |
 
-역할(R1~R5)은 PSI Monitor, /proc Reader, LLM Helper, 통합 데몬, 문서·평가로 구분된다.
-
----
-
-## 2. 주제 선정 과정
-
-프로젝트 방향(Direction B — LLM for OS)에 따라 각 조원이 주제를 제안하였다.
-
-| 제안자 | 주제 | 요약 |
-|--------|------|------|
-| 백선하 | LLM 기반 오류 진단 도구 | 한국어로 오류를 설명하면 로그를 분석해 해결 명령을 추천 |
-| 강규현 | AI 스피커용 OS | 뮤직 플레이어 탑재, 재생 효율 우선 CPU 스케줄링 |
-| 강규현 | 스마트홈 중앙서버 OS | 센서 데이터 기반 환경 자동 조절 |
-| 강규현 | LMS 워크스페이스 OS | 파일 구조를 LMS에 맞게 구성, AI 기반 작업 처리 |
-| 노혁준 | Conversational OOM Killer | OOM Killer를 자연어 정책 기반으로 재설계 |
-| 이승원 | 자연어 기반 커널 파라미터 관리 도구 | 복잡한 커널 명령을 자연어로 처리 |
-| 이유진 | 자동 와이파이 트러블슈터 | 네트워크 장애 시 LLM이 원인과 해결책 안내 |
-
-조원 복수 투표 결과 Conversational OOM Killer와 자연어 기반 오류 분석 도구가 동점을 기록하였다. 토론을 거쳐, Conversational OOM Killer가 더 흥미롭고 운영체제 개념을 깊이 다룰 수 있다는 의견이 다수를 이루어 최종 주제로 선정되었다.
+Roles R1–R5 correspond to PSI Monitor, /proc Reader, LLM Helper, Integration Daemon, and Documentation/Evaluation.
 
 ---
 
-## 3. 프로젝트 개요
+## 2. Topic Selection
 
-### 3.1 한 줄 요약
+Following the project direction (Direction B — LLM for OS), each member proposed a topic.
 
-리눅스의 OOM Killer를 사용자가 자연어로 작성한 우선순위 정책에 따라 동작하도록 재설계한다.
+| Proposer | Topic | Summary |
+|----------|-------|---------|
+| Baek Seonha | LLM-based error diagnosis tool | Describe an error in natural language; the tool analyzes logs and recommends a fix |
+| Kang Gyuhyeon | OS for AI speakers | Built-in music player; CPU scheduling prioritizing playback efficiency |
+| Kang Gyuhyeon | Smart-home central server OS | Sensor-driven environmental control |
+| Kang Gyuhyeon | LMS workspace OS | File structure adapted to LMS; AI-driven task processing |
+| Roh Hyukjun | Conversational OOM Killer | Redesign Linux OOM Killer to follow a user-written natural-language policy |
+| Lee Seungwon | NL-based kernel parameter tool | Handle complex kernel commands through natural language |
+| Lee Yujin | Automatic Wi-Fi troubleshooter | LLM-guided cause/fix diagnosis on network failure |
 
-### 3.2 문제의식
-
-기존 리눅스 OOM Killer는 oom_score라는 숫자 점수만으로 종료 대상 프로세스를 선택한다. 사용자의 의도(예: "VS Code는 절대 죽이지 마")가 전혀 반영되지 않으므로, 작업 중인 중요한 프로세스가 유휴 상태의 백그라운드 프로세스보다 먼저 종료되는 문제가 발생한다.
-
-### 3.3 우리의 접근
-
-사용자가 한 단락 분량의 자연어 정책을 작성하면, 메모리 압박이 감지될 때 LLM이 해당 정책을 해석하여 종료 대상을 추천한다. 안전성은 결정론적 C 코드로 구현된 Validator가 보장한다 (PID 1, systemd 등 핵심 시스템 프로세스 보호).
-
-### 3.4 기술 스택
-
-| 구분 | 기술 |
-|------|------|
-| 데몬 | C (PSI Monitor, /proc Reader, IPC, Validator, 시그널 처리) |
-| LLM 모듈 | Python 3 (Upstage Solar Pro API) |
-| IPC | fork + execlp + pipe (C ↔ Python 양방향 통신) |
-| 환경 | Linux (Ubuntu, cgroups v2 / PSI) + xv6 (QEMU) |
+After a multi-vote, the **Conversational OOM Killer** and the **NL-based error analysis tool** tied. Following further discussion, the team selected the Conversational OOM Killer as the final topic, as a majority found it more interesting and offering deeper engagement with operating-system concepts.
 
 ---
 
-## 4. 구현 및 동작 검증
+## 3. Project Overview
 
-### 4.1 개요
+### 3.1 One-line summary
 
-설계한 파이프라인을 실제로 구현하여 end-to-end 동작을 검증하였다. 가짜 데이터로 시작했던 PSI Monitor와 /proc Reader를 모두 실제 리눅스 데이터 기반으로 전환하였으며, LLM이 자연어 정책을 해석하여 실제 프로세스 중에서 종료 대상을 선정하는 동작이 정상 작동함을 확인하였다.
+Redesign the Linux OOM Killer to operate according to a user-written, natural-language priority policy.
 
-### 4.2 실제 실행 결과
+### 3.2 Motivation
 
-WSL 환경에서 실제로 실행한 결과는 다음과 같다.
+The default Linux OOM Killer selects victim processes based solely on a numeric `oom_score`. It does not reflect user intent at all (e.g., "Never kill VS Code"), so a critical process the user is actively working on can be terminated before an idle background process.
+
+### 3.3 Our Approach
+
+The user writes a one-paragraph natural-language policy. When memory pressure is detected, an LLM interprets this policy to recommend victims. Safety is guaranteed by a deterministic Validator implemented in C, which protects critical system processes such as PID 1 and systemd.
+
+### 3.4 Tech Stack
+
+| Component | Technology |
+|-----------|------------|
+| Daemon | C (PSI Monitor, /proc Reader, IPC, Validator, signal handling) |
+| LLM Module | Python 3 (Upstage Solar Pro API) |
+| IPC | fork + execlp + pipe (bidirectional C ↔ Python communication) |
+| Environment | Linux (Ubuntu, cgroups v2 / PSI) + xv6 (QEMU) |
+
+---
+
+## 4. Implementation and Verification
+
+### 4.1 Overview
+
+The designed pipeline was implemented and verified end-to-end. Both the PSI Monitor and the /proc Reader, originally implemented with placeholder data, were transitioned to use real Linux data. The core capability — *the LLM interpreting a natural-language policy to select termination targets from real processes* — was confirmed to operate correctly.
+
+### 4.2 Actual Execution Result
+
+The following is the actual output of running the system in dry-run mode under WSL.
 
 ```
 $ ./bin/coomd --dry-run
 
-[R4 Main Loop] PSI some_avg10: 16.50% (임계값: 15.00%)
-🚨 [ALERT] 메모리 위험 신호 감지 — OOM 처리 시작
+[R4 Main Loop] PSI some_avg10: 16.50% (threshold: 15.00%)
+🚨 [ALERT] Memory pressure detected — starting OOM handling
 
-[R2] 종료 후보 22개 발견 (/proc 실제 스캔)
+[R2] 22 candidate processes found (real /proc scan)
   -> PID  210 | unattended-upgr | 22144 kB
   -> PID   42 | systemd-journal | 15616 kB
   -> PID  122 | systemd-resolve | 12672 kB
   -> PID    1 | systemd         | 12336 kB
-  ... (총 22개)
+  ... (22 in total)
 
-[R3 LLM Helper] 사용자 정책 기반 victim 선택 요청...
-  🤖 AI 선택: unattended-upgr (PID 210)
-  💬 판단 근거: Only unattended-upgr is a non-system process not
+[R3 LLM Helper] Requesting victim selection based on user policy...
+  🤖 AI selection: unattended-upgr (PID 210)
+  💬 Rationale: Only unattended-upgr is a non-system process not
      explicitly protected by the policy. It frees 21.6MB. No other
      candidates are eligible per policy/system rules.
 
   🎯 victim → PID 210 (unattended-upgr)
      🛡️ [VALIDATOR] PASS
-     ⚡ [DRY-RUN] SIGTERM 가상 전송
+     ⚡ [DRY-RUN] Simulated SIGTERM sent
 ```
 
-22개의 실제 WSL 프로세스 중에서 AI는 시스템 프로세스를 모두 회피하고, 정책에 보호되지 않은 유일한 비시스템 프로세스(unattended-upgr)를 정확히 선택하였다. 판단 근거가 영어 문장으로 생성된 점에서, LLM이 사전 규칙이 아닌 실제 정책 추론을 수행하였음을 확인할 수 있다.
+Among 22 real WSL processes, the AI avoided all system processes and correctly selected the only non-system process unprotected by the policy (unattended-upgr). The fact that the rationale was generated as an English sentence confirms that the LLM performed actual policy-based reasoning rather than following predefined rules.
 
-### 4.3 기술적 핵심
+### 4.3 Technical Highlight
 
-C 기반 데몬과 Python LLM 모듈 간의 연동을 fork() + execlp() + pipe() 기반 양방향 IPC로 구현하였다. 운영체제의 프로세스 생성 및 프로세스 간 통신 개념을 직접 적용한 것으로, 본 프로젝트가 단순 LLM API 호출이 아니라 운영체제 수준의 설계를 본질로 함을 보여준다.
+The integration between the C-based daemon and the Python LLM module is implemented as bidirectional IPC using `fork()` + `execlp()` + `pipe()`. This directly applies the operating-system concepts of process creation and inter-process communication, demonstrating that the project is fundamentally an OS-level design rather than a simple LLM API call.
 
-### 4.4 xv6 커널 구현 (병행 진행)
+### 4.4 xv6 Kernel Implementation (Parallel Track)
 
-리눅스 유저스페이스 구현과 별개로, 동일한 PSI 메커니즘을 xv6 커널 수준에서 직접 구현하였다. kalloc에 sleep/wakeup 기반 메모리 대기 측정을 추가하고, 타이머 인터럽트마다 지수평균으로 PSI 지표를 갱신하며, 락 안전성을 위해 allocproc/kfork에서 락을 일시 해제하는 처리까지 포함하였다. QEMU에서 psitest 실행 시 메모리 압박에 따라 some_avg10이 0%에서 9%까지 실시간 측정되는 것을 확인하였다.
+In parallel with the Linux userspace implementation, the same PSI mechanism was implemented directly inside the xv6 kernel. Memory-wait measurement via `sleep`/`wakeup` was added in `kalloc`; PSI metrics are updated each timer interrupt using an exponential moving average; and lock-safety was addressed by temporarily releasing locks in `allocproc` and `kfork`. Running `psitest` under QEMU confirmed that `some_avg10` increases in real time from 0% up to 9% under memory pressure.
 
 ---
 
-## 5. 정책 부합률 평가
+## 5. Policy Compliance Evaluation
 
-### 5.1 평가 목적
+### 5.1 Evaluation Purpose
 
-본 시스템의 핵심 기능인 *"LLM이 자연어 정책에 근거하여 종료 대상을 정확히 선정하는가"*를 정량적으로 검증하기 위해, 5가지 시나리오에서 총 6회의 의사결정을 측정하였다.
+To quantitatively verify the core capability — *"Does the LLM accurately select termination targets based on the natural-language policy?"* — we measured 6 decisions across 5 scenarios.
 
-### 5.2 시나리오 설계
+### 5.2 Scenario Design
 
-| 번호 | 검증 항목 |
-|------|----------|
-| 1 | 명시적 보호/허용 규칙의 정확한 해석 |
-| 2 | 우선순위 기반 선택 및 메모리 목표 달성을 위한 단계적 종료 |
-| 3 | 정책에 명시되지 않은 시스템 프로세스의 상식적 보호 |
-| 4 | 메모리 목표와 정책 충돌 시 정책 우선 원칙 |
-| 5 | 동일 시스템 상태에서 정책 변경에 따른 결정 변화 |
+| # | Aspect Verified |
+|---|-----------------|
+| 1 | Accurate interpretation of explicit protect/allow rules |
+| 2 | Priority-based selection and incremental termination to meet memory target |
+| 3 | Common-sense protection of system processes not explicitly named in policy |
+| 4 | Policy-first principle when memory target conflicts with policy |
+| 5 | Change of decision when policy is changed under identical system state |
 
-### 5.3 결과 요약
+### 5.3 Summary of Results
 
-| # | 정책 핵심 | AI 선택 | 부합 |
-|---|---------|---------|------|
-| 1 | firefox/code 보호, chrome 허용 | chrome | ✅ |
-| 2 | music < browser < editor 우선순위 | spotify + chrome | ✅ |
-| 3 | 시스템 프로세스 추상적 보호 | chrome (systemd/init/dbus 회피) | ✅ |
-| 4 | 모든 후보 절대 보호 | (선택 없음) | ✅ |
+| # | Policy (key idea) | AI Selection | Compliant |
+|---|-------------------|--------------|-----------|
+| 1 | Protect firefox/code; chrome OK | chrome | ✅ |
+| 2 | music < browser < editor priority | spotify + chrome | ✅ |
+| 3 | Abstract "system processes" protection | chrome (systemd/init/dbus avoided) | ✅ |
+| 4 | All candidates absolutely protected | (none) | ✅ |
 | 5a | "Kill chrome" | chrome | ✅ |
 | 5b | "Save chrome, kill spotify" | spotify | ✅ |
 
-**총 6회 의사결정 중 6회 정책 부합 — Policy Compliance Rate: 100%**
+**6 decisions, 6 compliant — Policy Compliance Rate: 100%**
 
-### 5.4 주요 인사이트
+### 5.4 Key Insights
 
-**시나리오 4 — 정책 우선 원칙 (안전성)**
-메모리 목표(500MB)와 사용자 정책이 충돌하는 상황에서, 시스템은 메모리 목표 달성보다 사용자 정책 준수를 우선시하여 종료를 거부하였다. 기존 OOM Killer가 무조건적으로 victim을 선택하는 것과 달리, 사용자 의도를 침해하지 않는 안전한 동작을 보였다.
+**Scenario 4 — Policy-first principle (safety)**
+When the memory target (500 MB) conflicted with the user policy, the system prioritized policy compliance over reaching the memory target and refused to terminate any process. Unlike the default OOM Killer which unconditionally selects a victim, the system exhibited safe behavior that does not violate user intent.
 
-**시나리오 5 — Conversational의 본질**
-동일한 시스템 상태(같은 후보, 같은 메모리)에서 정책만 변경하였더니 AI가 정반대의 결정을 도출하였다. "Kill chrome"이면 chrome을, "Save chrome, kill spotify"이면 spotify를 선택하였다. 이는 기존 OOM Killer로는 불가능한 동작이며, 본 프로젝트가 "Conversational"로 명명된 근거가 실제로 구현되었음을 보여준다.
+**Scenario 5 — Essence of "Conversational"**
+Under physically identical system state (same candidates, same memory), changing only the policy led the AI to make opposite decisions: selecting chrome for "Kill chrome," and spotify for "Save chrome, kill spotify." This behavior cannot be exhibited by the default OOM Killer, and constitutes the realization of the value implied by the project name "Conversational."
 
-**시나리오 3 — 상식 기반 안전 판단**
-정책이 "system processes"라는 추상적 표현만 사용하였음에도, AI는 systemd, init, dbus-daemon을 모두 시스템 프로세스로 인식하여 회피하였다. 단순 규칙 매칭이 아닌 일반 상식 기반 해석 능력을 보여준다.
+**Scenario 3 — Common-sense-based safety**
+Although the policy used only the abstract phrase "system processes," the AI correctly identified systemd, init, and dbus-daemon as system processes and excluded all of them. This demonstrates interpretation based on general knowledge rather than mere rule matching.
 
-### 5.5 알려진 한계
+### 5.5 Known Limitations
 
-평가 과정에서 LLM이 메모리 단위 환산에서 부정확한 응답을 보인 사례가 한 차례 관측되었다 (390.625 MB를 500 MB target보다 크다고 응답). 종료 대상 선택 자체는 정책에 부합하였으므로 정책 부합률에는 영향이 없으나, 향후 결정론적 산술 연산은 결정론적 코드로 보완할 필요가 있다.
+During evaluation, the LLM exhibited inaccuracy in unit conversion once (reporting 390.625 MB as exceeding a 500 MB target). The termination target selection itself complied with the policy, so the policy compliance rate is not affected. Deterministic arithmetic should be complemented by deterministic code in the future.
 
 ---
 
-## 6. 향후 계획
+## 6. Next Steps
 
-- 평가 시나리오 확장 및 자동화된 회귀 테스트 구축
-- stress-ng 기반 실제 메모리 압박 환경에서의 종단 검증
-- xv6 PSI 구현의 안정성 개선 (락 안전성, full 지표 검증)
-- 리눅스 데몬과 xv6 구현 간의 비교 분석 문서화
+- Extend evaluation scenarios and build an automated regression test
+- End-to-end verification under real memory pressure with `stress-ng`
+- Improve stability of the xv6 PSI implementation (lock safety, full metric verification)
+- Document comparative analysis between the Linux daemon and the xv6 implementation
