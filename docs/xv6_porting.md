@@ -1,132 +1,123 @@
 # Porting to xv6-riscv: Design Sketch
 
-다음 섹션은 동일한 메커니즘을 **수업에서 사용한 xv6-riscv 커널**로 포팅한다면 어떤 구조가
-될지에 대한 디자인 스케치를 제시한다. 실제 포팅 구현은 본 프로젝트의
-범위를 벗어나지만, 시스템의 일반화 가능성을 검증하기 위한 사고 실험으로
-가치가 있다.
+This section presents a design sketch of how the same mechanism would be structured if ported to the **xv6-riscv kernel used in this course**. Although the actual porting implementation is beyond the scope of this project, it is valuable as a thought experiment for verifying the generality of the system.
 
-## 1. 포팅이 필요한 이유와 한계
+## 1. Why Porting Is Needed, and Its Limits
 
-xv6-riscv는 네트워크 스택과 TLS 라이브러리를 포함하지 않으므로, **xv6
-내부에서 직접 Solar API를 호출하는 것은 불가능**하다. 따라서 포팅 디자인은
-다음 두 부분으로 나뉜다.
+xv6-riscv does not include a network stack or TLS library, so **calling the Solar API directly inside xv6 is impossible**. Therefore, the porting design is split into two parts:
 
-- **xv6 커널 측**: 메모리 압박 감지, 후보 수집, victim 시그널 전송
-- **호스트 측 (QEMU 외부)**: LLM API 호출을 담당하는 Python 헬퍼
-- **두 측의 통신**: QEMU 가상 시리얼 포트(`uart.c`)를 채널로 활용
+- **xv6 kernel side**: Memory pressure detection, candidate collection, victim signaling.
+- **Host side (outside QEMU)**: A Python helper responsible for LLM API calls.
+- **Communication between the two**: QEMU's virtual serial port (`uart.c`) is used as the channel.
 
-이는 리눅스 구현의 "C 데몬 ↔ Python 헬퍼" 분리 구조를 그대로 이어받는다.
+This directly inherits the "C daemon ↔ Python helper" separation from the Linux implementation.
 
-## 2. 메모리 압박 감지 — `kalloc.c` 훅
+## 2. Memory Pressure Detection — Hook in `kalloc.c`
 
-xv6에는 PSI에 해당하는 기능이 없으므로, **`kalloc()` 호출 시점**에서
-직접 free page 수를 검사하는 방식으로 대체한다.
+xv6 has no equivalent of PSI, so we substitute it by inspecting the free-page count **at the moment `kalloc()` is called**.
 
-`kernel/kalloc.c`에 다음 로직을 추가한다.
+The following logic is added to `kernel/kalloc.c`.
 
 ```c
-// kalloc.c에 추가
-static int free_pages_count = 0;     // 현재 free 페이지 수
-static int oom_threshold = 64;       // 임계치 (페이지 단위)
-extern void notify_oom_pressure(void); // 새 함수
+// add to kalloc.c
+static int free_pages_count = 0;     // current number of free pages
+static int oom_threshold = 64;       // threshold (in pages)
+extern void notify_oom_pressure(void); // new function
 
 void *
 kalloc(void)
 {
-  // ... 기존 할당 로직 ...
+  // ... existing allocation logic ...
 
   if (free_pages_count < oom_threshold) {
-    notify_oom_pressure();  // 호스트 헬퍼에 알림
+    notify_oom_pressure();  // notify the host helper
   }
   return ptr;
 }
 ```
 
-`free_pages_count`는 freelist 길이를 카운트하여 유지한다.
+`free_pages_count` is maintained by counting the freelist length.
 
-## 3. 새 시스템콜 — 사용자 공간 헬퍼와의 연결
+## 3. New System Calls — Link to the User-Space Helper
 
-xv6의 시스템콜 추가 패턴(수업에서 다룬 그대로)을 활용하여 두 개의
-시스템콜을 추가한다.
+Following the system-call addition pattern covered in class, two new system calls are introduced.
 
-| 시스템콜 | 역할 |
-|---------|------|
-| `sys_get_oom_candidates(buf, max)` | proc 테이블 순회 후 후보 메타데이터 반환 |
-| `sys_kill_victim(pid)` | 검증된 PID에 시그널 전송 (`proc.c`의 `kill()` 활용) |
+| System Call | Role |
+|-------------|------|
+| `sys_get_oom_candidates(buf, max)` | Traverse the proc table and return candidate metadata |
+| `sys_kill_victim(pid)` | Send a signal to a verified PID (using `kill()` in `proc.c`) |
 
-추가 위치는 수업에서 다룬 패턴 그대로:
+Insertion points follow the pattern taught in class:
 
-- `kernel/syscall.h` — `SYS_get_oom_candidates`, `SYS_kill_victim` 번호 등록
-- `kernel/syscall.c` — `syscalls[]` 배열에 함수 포인터 추가
-- `kernel/sysproc.c` — 실제 구현 (`sys_get_oom_candidates`, `sys_kill_victim`)
-- `user/user.h` — 유저 공간 프로토타입 선언
-- `user/usys.pl` — 유저-커널 trap 진입점
+- `kernel/syscall.h` — Register `SYS_get_oom_candidates`, `SYS_kill_victim` numbers
+- `kernel/syscall.c` — Add function pointers to the `syscalls[]` array
+- `kernel/sysproc.c` — Actual implementations (`sys_get_oom_candidates`, `sys_kill_victim`)
+- `user/user.h` — Declare user-space prototypes
+- `user/usys.pl` — User-to-kernel trap entry points
 
-## 4. 호스트와의 통신 — UART 채널
+## 4. Host Communication — UART Channel
 
-QEMU는 xv6의 가상 시리얼 포트를 호스트의 stdio로 연결할 수 있다. 이를
-이용해 다음과 같은 통신 구조를 만든다.
-[xv6 kernel]                                [Host (QEMU 외부)]
+QEMU can connect xv6's virtual serial port to the host's stdio. Using this, we construct the following communication structure.
+
+```
+[xv6 kernel]                                [Host (outside QEMU)]
 │                                            │
 │  candidates JSON via UART  ───────►       │
-│  (kernel/uart.c의 uartputc 사용)           │
+│  (uses uartputc in kernel/uart.c)          │
 │                                       Python LLM Helper
-│                                       (Solar API 호출)
+│                                       (calls Solar API)
 │                                            │
 │  ◄───── decision JSON via UART            │
-│       (kernel/uart.c의 uartgetc 사용)      │
+│       (uses uartgetc in kernel/uart.c)     │
 ▼
-sys_kill_victim(pid) 호출
+sys_kill_victim(pid) invocation
+```
 
-xv6 커널 측의 의사코드:
+Pseudo-code on the xv6 kernel side:
 
 ```c
 void notify_oom_pressure(void) {
     char buf[CAND_BUF_SIZE];
     int n = collect_candidates(buf, sizeof(buf));
-    uart_write(buf, n);                  // 후보 송신
-    sleep(&uart_response_channel, &lock); // 응답 대기
+    uart_write(buf, n);                       // send candidates
+    sleep(&uart_response_channel, &lock);     // wait for response
     int victim_pid = parse_decision(uart_buf);
-    kill(victim_pid);                     // proc.c의 기존 함수 활용
+    kill(victim_pid);                          // reuse existing function in proc.c
 }
 ```
 
-## 5. 응답 대기 메커니즘 — `sleep` / `wakeup`
+## 5. Response Waiting Mechanism — `sleep` / `wakeup`
 
-LLM 호출은 1~2초 가량 소요된다. 리눅스 구현에서는 pipe의 blocking read
-가 자연스럽게 해결해주지만, xv6는 명시적인 `sleep()` / `wakeup()` 패턴을
-사용해야 한다.
+An LLM call takes 1–2 seconds. In the Linux implementation, blocking `read` on a pipe handles this naturally; in xv6, we must use the explicit `sleep()` / `wakeup()` pattern.
 
-- UART 응답 대기는 `sleep(&channel, &lock)`로 블록
-- UART 인터럽트 핸들러(`uartintr`)에서 응답 도착 시 `wakeup(&channel)`
-- 이는 xv6에서 디스크 I/O 등에 이미 사용되는 동일한 패턴
+- Waiting for the UART response is done by `sleep(&channel, &lock)`.
+- The UART interrupt handler (`uartintr`) calls `wakeup(&channel)` upon arrival of the response.
+- This is the same pattern already used for disk I/O in xv6.
 
-## 6. 본 디자인이 활용하는 xv6 / OS 개념
+## 6. xv6 / OS Concepts Used by This Design
 
-| 개념 | xv6에서의 위치 | 본 디자인의 활용 |
-|------|---------------|----------------|
-| 물리 메모리 관리 | `kalloc.c` | OOM 트리거의 시작점 |
-| 프로세스 테이블 | `proc.c` | 후보 수집의 소스 |
-| 시스템콜 추가 | `syscall.c`, `sysproc.c` | 사용자 공간 헬퍼와의 인터페이스 |
-| 디바이스 드라이버 | `uart.c` | 호스트와의 통신 채널 |
-| `sleep`/`wakeup` | `proc.c` | 비동기 응답 대기 |
-| 시그널/프로세스 종료 | `proc.c`의 `kill()` | victim 종료 |
+| Concept | Location in xv6 | Use in This Design |
+|---------|------------------|---------------------|
+| Physical memory management | `kalloc.c` | Trigger point for OOM |
+| Process table | `proc.c` | Source of candidate collection |
+| System call addition | `syscall.c`, `sysproc.c` | Interface with the user-space helper |
+| Device driver | `uart.c` | Communication channel with the host |
+| `sleep`/`wakeup` | `proc.c` | Asynchronous response waiting |
+| Signals / process termination | `kill()` in `proc.c` | Victim termination |
 
-## 7. 미니 프로토타입 가능성 (Week 13 보너스)
+## 7. Mini-Prototype Possibility (Bonus, Week 13)
 
-시간 여유가 있다면 Week 13에 다음 정도의 미니 프로토타입을 시연할 수
-있다.
+If time permits in Week 13, the following mini-prototype can be demonstrated:
 
-- xv6에 echo 시스템콜 1개 추가 (`sys_echo_to_host`)
-- 호스트 측 Python 스크립트와 UART로 왕복 통신
-- 본 디자인의 통신 구조가 실제로 동작함을 입증
+- Add a single echo system call to xv6 (`sys_echo_to_host`).
+- Round-trip communication with a host-side Python script over UART.
+- Demonstrate that the communication structure of this design actually works.
 
-전체 포팅은 본 프로젝트 범위 밖이지만, 이 미니 프로토타입은 디자인의
-타당성을 검증하는 핵심 부분이다.
+The full port is out of scope, but this mini-prototype is the key piece for validating the design's feasibility.
 
-## 8. 디자인의 한계
+## 8. Limitations of the Design
 
-- xv6는 페이지 단위 정밀 통계가 없어 임계치를 free page 수로만 판단
-- UART는 본질적으로 느린 채널이며, 직렬화·역직렬화 오버헤드 존재
-- 평문 통신으로 보안상 취약 (실제 시스템에는 부적합, 학술적 시연 목적)
-- xv6는 단일 사용자 OS이므로 "사용자별 정책" 개념이 약함
+- xv6 lacks fine-grained page-level statistics, so the threshold is judged solely by the free-page count.
+- UART is intrinsically a slow channel, with serialization/deserialization overhead.
+- Plain-text communication is security-vulnerable (unsuitable for a real system; demonstrative purposes only).
+- xv6 is a single-user OS, so the notion of "per-user policy" is weak.

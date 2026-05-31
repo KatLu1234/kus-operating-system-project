@@ -1,90 +1,61 @@
 # Problem Statement
 
-## 1. 배경 - 누구나 한 번쯤 겪는 현상
+## 1. Background — A Phenomenon Everyone Has Experienced
 
-노트북에서 작업하다가 갑자기 Chrome 탭이 한 무더기 닫히거나, VS Code가
-꺼지거나, 컴파일 중인 터미널이 사라진 경험이 있다. 폰에서도 게임을 하다가
-잠시 다른 앱을 열고 돌아오면 게임이 처음부터 다시 시작되는 경우가 있다.
+While working on a laptop, you may have suddenly seen a bunch of Chrome tabs closed, VS Code shut down, or the terminal running your compilation vanish. On phones, it is common for a game to restart from the beginning after switching to another app and returning.
 
-이런 현상은 운영체제가 **메모리 부족 상황에서 의도적으로 프로세스를
-종료시켰기 때문에** 발생한다. 리눅스에서 이 역할을 하는 커널 메커니즘이
-**OOM Killer (Out-Of-Memory Killer)** 다.
+This phenomenon occurs because the operating system **intentionally terminated processes under memory pressure**. The kernel mechanism in Linux responsible for this is the **OOM Killer (Out-Of-Memory Killer)**.
 
-## 2. 기존 OOM Killer의 동작 방식
+## 2. How the Default OOM Killer Works
 
-OOM Killer는 시스템의 가용 메모리가 임계치 이하로 떨어지면 트리거되어,
-실행 중인 모든 프로세스에 대해 `oom_score`라는 점수를 계산한다. 이 점수는
-다음 요소들을 기반으로 한다.
+The OOM Killer is triggered when the system's available memory falls below a threshold. It computes an `oom_score` for every running process based on factors such as:
 
-- 프로세스의 메모리 사용량 (`VmRSS`)
-- 실행 시간
-- nice 값
-- 관리자가 설정한 `oom_score_adj` 보정 값
+- The process's memory usage (`VmRSS`)
+- Execution time
+- The nice value
+- The administrator-tuned `oom_score_adj` adjustment
 
-가장 높은 점수를 받은 프로세스가 종료 대상이 된다. 즉, **기본적으로
-메모리를 많이 사용하는 프로세스부터 죽인다**.
+The process with the highest score becomes the termination target. In other words, by default, **processes that use the most memory are killed first**.
 
-## 3. 기존 메커니즘의 한계
+## 3. Limitations of the Default Mechanism
 
-`oom_score` 방식은 시스템 메트릭만을 본다. **사용자의 의도는 전혀
-반영되지 않는다**. 결과적으로 다음과 같은 상황이 자주 발생한다.
+The `oom_score` approach considers only system-level metrics. **User intent is not reflected at all**. As a result, the following situations occur frequently.
 
-**시나리오 1 : 개발 작업 중**
-사용자가 VS Code(2 GB)로 코딩 중이고, 백그라운드에 Chrome 창(2.5 GB)이
-열려 있다. 메모리 부족이 발생하면 OOM Killer는 `oom_score`가 더 높은
-프로세스 - 사용자 입장에서는 **더 중요한** VS Code - 를 죽일 수 있다.
+**Scenario 1 — During Development**
+A user is coding in VS Code (2 GB), with a Chrome window (2.5 GB) in the background. When memory pressure occurs, the OOM Killer may kill the process with the higher `oom_score` — from the user's perspective, the **more important** VS Code.
 
-**시나리오 2 : 빌드 도중**
-대규모 빌드(`cargo build`, `npm run build`)가 메모리 압박을 일으키는
-동안 OOM Killer가 빌드 자체를 죽이는 경우가 있다. 진행 상황이 모두
-소실된다.
+**Scenario 2 — During a Build**
+While a large build (`cargo build`, `npm run build`) causes memory pressure, the OOM Killer may kill the build itself. All progress is lost.
 
-**시나리오 3 : 컨테이너 환경**
-여러 Docker 컨테이너가 동시 실행 중일 때, 사용자에게 중요한 개발용
-컨테이너(`dev-postgres`)와 단순 테스트 컨테이너(`random-test`)가 동일하게
-`oom_score`로 평가된다. 사용자의 우선순위 의도가 적용되지 않는다.
+**Scenario 3 — Container Environments**
+When multiple Docker containers run simultaneously, a development container critical to the user (`dev-postgres`) and a trivial test container (`random-test`) are evaluated by the same `oom_score`. The user's priority intent is not applied.
 
-`oom_score_adj` 값을 수동으로 조정하면 어느 정도 완화할 수 있지만,
-**모든 프로세스에 대해 사전에 숫자를 설정해야 하며**, 작업 컨텍스트가
-바뀔 때마다(코딩 -> 게이밍 -> 발표) 다시 설정해야 한다. 현실적으로
-대부분의 사용자는 이 기능을 사용하지 않는다.
+Manually adjusting `oom_score_adj` can mitigate this somewhat, but **the user must set numbers for every process in advance**, and must re-set them every time the work context changes (coding → gaming → presentation). In practice, most users do not use this feature.
 
-## 4. 우리의 접근 : Conversational OOM Killer
+## 4. Our Approach — Conversational OOM Killer
 
-우리의 프로젝트는 OOM victim 선택 메커니즘을 다음과 같이 재설계한다.
+This project redesigns the OOM victim-selection mechanism as follows.
 
-1. **사용자가 우선순위를 자연어로 작성한다.** 한 단락의 텍스트 파일
-   (`~/.oom_policy`)로 자신의 의도를 표현한다.
-2. **메모리 압박이 감지되면 LLM이 정책에 따라 victim을 추천한다.**
-   userspace 데몬이 PSI(Pressure Stall Information)를 통해 압박을
-   감지하고, `/proc` 메타데이터를 수집하여 Upstage Solar Pro 3에
-   전달한다. LLM은 정책의 의도를 해석하여 적절한 victim PID를 응답한다.
+1. **The user writes priorities in natural language.** They express their intent as a one-paragraph text file (`~/.oom_policy`).
+2. **When memory pressure is detected, an LLM recommends victims according to the policy.** A userspace daemon detects pressure via PSI (Pressure Stall Information), collects `/proc` metadata, and forwards them to Upstage Solar Pro 3. The LLM interprets the policy's intent and responds with appropriate victim PIDs.
+3. **Safety is guaranteed by deterministic verification.** LLM responses are passed to the signal dispatcher only after a whitelist check (PID 1, systemd, sshd, etc.). The LLM only suggests; the final decision is made by OS-side code.
 
-3. **안전성은 결정론적 검증으로 보장한다.** LLM 응답은 화이트리스트
-   (PID 1, systemd, sshd 등)와 대조 후에만 시그널 디스패처에 전달된다.
-   LLM은 제안할 뿐, 최종 결정은 OS 측 코드가 한다.
+## 5. Why an LLM Is Necessary
 
-## 5. 왜 LLM이 필요한가
+Some cases could be handled by simple grep/regex-based rules. However, an LLM is fundamentally advantageous in the following respects.
 
-단순 grep/regex 기반 룰로도 일부 케이스는 해결할 수 있다. 그러나 다음
-관점에서 LLM이 본질적으로 유리하다.
+- **Semantic matching**: If a user writes "compilers," the system should automatically include `gcc`, `cargo`, `npm`, `make`, `javac`, etc. A rule-based approach requires the user to enumerate every name.
 
-- **의미적 매칭**: 사용자가 "compilers"라고 쓰면 `gcc`, `cargo`, `npm`,
-  `make`, `javac` 등을 자동으로 포함해야 한다. 규칙 기반으로는 사용자가
-  모든 이름을 나열해야 한다.
+- **Free-form policy**: Flexible expressions such as "Protect what I have open while coding; you can kill music and games" can be input as-is.
 
-- **자유 형식 정책**: "코딩 중에 켜둔 것들은 보호하고 음악·게임은 죽여도 돼"
-  같은 유연한 표현을 그대로 입력할 수 있다.
+- **Contextual aggregation**: The LLM can simultaneously consider multiple signals — `cmdline`, `cgroup`, parent PID — of candidate processes to derive a priority judgment.
 
-- **컨텍스트 종합**: 후보 프로세스의 `cmdline`, `cgroup`, 부모 PID 등 여러
-  신호를 동시에 고려한 우선순위 판단이 가능하다.
+## 6. Contributions
 
-## 6. 기여
+This project contributes the following:
 
-본 프로젝트의 기여는 다음과 같다.
-
-- 자연어 정책에 기반한 OOM victim 선택 메커니즘의 설계 및 구현
-- LLM 응답의 안전성 보장을 위한 결정론적 Validator 계층
-- PSI·`/proc`·시그널·IPC 등 운영체제 핵심 개념을 활용한 시스템 통합
-- 기본 Linux OOM Killer와의 비교 평가
-- xv6-riscv로의 포팅 디자인
+- Design and implementation of an OOM victim-selection mechanism based on natural-language policy
+- A deterministic Validator layer to ensure the safety of LLM responses
+- System integration leveraging core OS concepts such as PSI, `/proc`, signals, and IPC
+- Comparative evaluation against the default Linux OOM Killer
+- A porting design for xv6-riscv
