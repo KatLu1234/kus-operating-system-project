@@ -29,12 +29,12 @@
           </ul>
 
           <div class="metric">
-            <div class="metric-head"><label>CPU</label><b id="cpu-value">--%</b></div>
+            <div class="metric-head"><label>CPU (xv6)</label><b id="cpu-value">--%</b></div>
             <canvas class="metric-graph" id="cpu-graph" width="240" height="48"></canvas>
           </div>
 
           <div class="metric">
-            <div class="metric-head"><label>MEMORY (RSS)</label><b id="mem-value">-- MB</b></div>
+            <div class="metric-head"><label>MEMORY (xv6)</label><b id="mem-value">-- MB</b></div>
             <canvas class="metric-graph" id="mem-graph" width="240" height="48"></canvas>
           </div>
 
@@ -72,6 +72,8 @@
 
           <div class="subhead">OOM</div>
           <ul class="status-list">
+            <li><span>LLM ENGINE</span><b id="oom-engine">--</b></li>
+            <li><span>PYTHON</span><b id="py-state">--</b></li>
             <li><span>COOMD</span><b id="coomd-state">--</b></li>
             <li><span>COOMD PID</span><b id="coomd-pid">--</b></li>
             <li><span>THRESHOLD</span><b id="oom-threshold">--</b></li>
@@ -81,6 +83,9 @@
             <li><span>LAST CALL</span><b id="oom-last">--</b></li>
             <li><span>VICTIMS</span><b id="oom-victims">0</b></li>
           </ul>
+
+          <div class="subhead">PROCESSES (xv6)</div>
+          <pre class="proc-table" id="proc-table">(no data)</pre>
 
           <div class="subhead">EVENTS</div>
           <pre class="oom-log" id="oom-log">(no OOM events yet)</pre>
@@ -95,8 +100,11 @@
           <span>COOMD <b id="foot-coomd">--</b></span>
           <span>LLM <b id="foot-llm">--</b></span>
           <span>ELECTRON <b id="foot-electron">--</b></span>
+          <span>PY <b id="foot-py">--</b></span>
           <span class="dim">[ESC] quit</span>
           <span class="footer-actions">
+            <button id="btn-engine">ENGINE: PYTHON</button>
+            <button id="btn-test-oom">TEST LLM</button>
             <button id="btn-restart">RESTART</button>
             <button id="btn-stop">STOP</button>
           </span>

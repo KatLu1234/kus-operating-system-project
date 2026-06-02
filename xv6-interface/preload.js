@@ -8,7 +8,8 @@ contextBridge.exposeInMainWorld('xv6', {
   onStdout:  (cb) => ipcRenderer.on('qemu:stdout',  (_, d) => cb(d)),
   onStderr:  (cb) => ipcRenderer.on('qemu:stderr',  (_, d) => cb(d)),
   onExit:    (cb) => ipcRenderer.on('qemu:exit',    (_, d) => cb(d)),
-  onMetrics: (cb) => ipcRenderer.on('qemu:metrics', (_, d) => cb(d)),
+  onMetrics: (cb) => ipcRenderer.on('qemu:metrics', (_, d) => cb(d)),  // host QEMU (legacy)
+  onKstat:   (cb) => ipcRenderer.on('kstat:update', (_, d) => cb(d)),  // xv6 internal status (statd)
   restart:   () => ipcRenderer.invoke('qemu:restart'),
   stop:      () => ipcRenderer.invoke('qemu:stop'),
   send:      (text) => ipcRenderer.invoke('xv6:stdin', text),
@@ -16,6 +17,12 @@ contextBridge.exposeInMainWorld('xv6', {
   // OOM killer telemetry (structured) — emitted by main.js after parsing coomd EVENT lines
   onOomEvent:    (cb) => ipcRenderer.on('oom:event',    (_, d) => cb(d)),
   onOomPressure: (cb) => ipcRenderer.on('oom:pressure', (_, d) => cb(d)),
+
+  // Python LLM helper orchestration (the interface manages the Python side)
+  onPyStatus:  (cb) => ipcRenderer.on('py:status', (_, d) => cb(d)),
+  pyCheck:     () => ipcRenderer.invoke('py:check'),
+  setEngine:   (engine) => ipcRenderer.invoke('oom:engine', engine),
+  testOom:     () => ipcRenderer.invoke('oom:test'),
 
   // coomd lifecycle + raw output
   onCoomdStatus: (cb) => ipcRenderer.on('coomd:status', (_, d) => cb(d)),

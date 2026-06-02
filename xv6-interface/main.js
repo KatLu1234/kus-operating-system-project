@@ -9,6 +9,26 @@ const PROJECT_ROOT = path.resolve(__dirname, '..');
 const COOMD_DIR    = path.join(PROJECT_ROOT, 'coomd');
 const COOMD_BIN    = path.join(COOMD_DIR, 'bin', 'coomd');
 
+// Python LLM helper (R3). The interface runs this per OOM decision via a
+// fork-exec-pipe, exactly like the coomd C daemon does, so the interface is
+// the single orchestrator of both xv6 and the Python side.
+const HELPER_PY    = path.join(COOMD_DIR, 'LLM_client', 'helper.py');
+// Candidate interpreters, in priority order. A project venv wins if present.
+const PYTHON_VENVS = [
+  path.join(COOMD_DIR, '.venv', 'bin', 'python3'),
+  path.join(PROJECT_ROOT, '.venv', 'bin', 'python3'),
+];
+const PYTHON_FALLBACKS = ['python3', 'python'];
+
+// Natural-language policy handed to the Python helper for OOM decisions.
+const OOM_POLICY = process.env.OOM_POLICY ||
+  'Keep init, the shell (sh) and oomd alive. Memory hogs such as memhog are ' +
+  'fine to kill to relieve pressure.';
+
+// OOM decision engine: 'python' (helper.py) → fall back to 'llm' (JS fetch) →
+// heuristic. 'llm' skips Python; 'auto' is an alias for 'python'.
+let oomEngine = (process.env.OOM_ENGINE || 'python').toLowerCase();
+
 // Assumes the Electron app is launched from inside WSL (Linux), where
 // make / qemu-system-riscv64 / riscv toolchain are installed.
 const BOOT_CMD = 'make clean && make qemu';
@@ -29,6 +49,14 @@ let coomd = null;
 let coomdLineBuf = '';
 let metricsTimer = null;
 let startedAt = null;
+
+// xv6 kernel-monitor (statd) line buffering + CPU% delta state.
+let qemuLineBuf = '';
+let prevStat = null;          // previous @@STAT sample, for CPU% deltas
+let oomBusy = false;          // guard so we answer one @@OOM_REQ at a time
+let pythonCmd = null;         // resolved interpreter path (or null if missing)
+
+const PG_KB = 4;              // xv6 page = 4 KiB
 
 // Rolling tail of qemu's combined output, used as LLM context.
 const TAIL_MAX = 16384;
@@ -104,10 +132,12 @@ function startQemu() {
     startedAt,
   });
 
+  qemuLineBuf = '';
+  prevStat = null;
   qemu.stdout.on('data', (b) => {
     const s = b.toString('utf8');
     appendTail(s);
-    send('qemu:stdout', s);
+    routeQemuOutput(s);
   });
   qemu.stderr.on('data', (b) => {
     const s = b.toString('utf8');
@@ -147,6 +177,261 @@ function stopQemu() {
 function writeStdin(text) {
   if (!qemu || !qemu.stdin || qemu.stdin.destroyed) return false;
   try { qemu.stdin.write(text); return true; } catch (_) { return false; }
+}
+
+// ─────────────────────────────────────────────────────────────
+// xv6 kernel monitor — main.js *is* the relay (docs/xv6_electron_monitor.md)
+//   - line-buffer qemu stdout so we can intercept tagged lines whole
+//   - "@@STAT {json}"  -> parse + CPU% delta -> IPC 'kstat:update' (hidden from console)
+//   - "@@OOM_REQ {json}" -> ask the LLM -> inject "@@OOM_RESP {json}" into xv6 stdin
+//   - every other line -> forwarded to the console as before
+// ─────────────────────────────────────────────────────────────
+
+function stateName(st) {
+  return ({ 1: 'USED', 2: 'SLEEP', 3: 'READY', 4: 'RUN', 5: 'ZOMBIE' }[st]) || '?';
+}
+
+function routeQemuOutput(chunk) {
+  qemuLineBuf += chunk;
+  let nl;
+  while ((nl = qemuLineBuf.indexOf('\n')) >= 0) {
+    const line = qemuLineBuf.slice(0, nl);
+    qemuLineBuf = qemuLineBuf.slice(nl + 1);
+    if (line.startsWith('@@STAT')) {
+      handleStatLine(line.slice('@@STAT'.length).trim());   // never reaches the console
+    } else if (line.startsWith('@@OOM_REQ')) {
+      handleOomReq(line.slice('@@OOM_REQ'.length).trim());
+    } else if (line.startsWith('@@')) {
+      /* other tags (e.g. @@OOM_RESP echo, @@STAT_ERR) are hidden from console */
+    } else {
+      send('qemu:stdout', line + '\n');                     // ordinary console line
+    }
+  }
+  // A newline-less tail (the shell prompt "$ ") must show immediately, but if it
+  // begins with '@' it may be a tag still being assembled — keep it buffered.
+  if (qemuLineBuf.length && !qemuLineBuf.startsWith('@')) {
+    send('qemu:stdout', qemuLineBuf);
+    qemuLineBuf = '';
+  }
+}
+
+function handleStatLine(json) {
+  let o;
+  try { o = JSON.parse(json); } catch (_) { return; }   // drop torn lines
+
+  // CPU% = (cpu_ticks_now - cpu_ticks_prev) / ((uptime delta) * ncpu) * 100
+  const dUp = prevStat ? Math.max(1, o.uptime - prevStat.uptime) : 1;
+  const prevCpu = {};
+  if (prevStat) for (const p of prevStat.procs) prevCpu[p.pid] = p.cpu;
+
+  let totalDelta = 0;
+  const procs = (o.procs || []).map((p) => {
+    const dCpu = prevStat ? (p.cpu - (prevCpu[p.pid] ?? p.cpu)) : 0;
+    totalDelta += Math.max(0, dCpu);
+    const cpuPct = prevStat ? (100 * dCpu) / (dUp * o.ncpu) : 0;
+    return {
+      pid: p.pid,
+      name: p.name,
+      state: stateName(p.st),
+      memKb: p.sz_kb,
+      cpuPct: Math.max(0, cpuPct),
+      stall: p.stall,
+    };
+  });
+
+  const usedPg = o.total_pg - o.free_pg;
+  const payload = {
+    uptimeTicks: o.uptime,
+    ncpu: o.ncpu,
+    cpuPct: prevStat ? (100 * totalDelta) / (dUp * o.ncpu) : 0,
+    memUsedMB: (usedPg * PG_KB) / 1024,
+    memTotalMB: (o.total_pg * PG_KB) / 1024,
+    memPct: o.total_pg ? (100 * usedPg) / o.total_pg : 0,
+    running: o.running,
+    runnable: o.runnable,
+    psiSome: o.psi_some,
+    psiFull: o.psi_full,
+    procCount: procs.length,
+    procs: procs.sort((a, b) => b.cpuPct - a.cpuPct),
+  };
+
+  prevStat = o;
+  send('kstat:update', payload);
+}
+
+// xv6 -> host OOM request: ask the LLM which candidate to kill, inject reply.
+async function handleOomReq(json) {
+  let req;
+  try { req = JSON.parse(json); } catch (_) { return; }
+  if (oomBusy) return;            // ignore overlapping requests
+  oomBusy = true;
+
+  let victims = [];
+  let reasoning = '';
+  let engine = 'fallback';
+  try {
+    const decision = await decideOom(req);
+    victims = Array.isArray(decision.victims) ? decision.victims : [];
+    reasoning = decision.reasoning || '';
+    engine = decision.engine || engine;
+  } catch (e) {
+    reasoning = `decision failed: ${e.message}`;
+  }
+
+  // Never let init(1) be chosen.
+  victims = victims.filter((v) => Number.isInteger(v) && v > 1);
+
+  send('oom:event', { kind: 'decision', source: 'xv6', engine, victims, reasoning,
+                      psi: req.psi, candCount: (req.candidates || []).length,
+                      timestamp: Date.now() });
+
+  writeStdin('@@OOM_RESP ' + JSON.stringify({ victims, reasoning }) + '\n');
+  oomBusy = false;
+}
+
+// Unified decision path the interface orchestrates:
+//   engine 'python' → run helper.py (R3) → on failure fall back to JS fetch;
+//   engine 'llm'    → JS fetch directly.
+// Both end in the heuristic fallback inside decideOomVictims if no API key.
+async function decideOom(req) {
+  if (oomEngine === 'python' || oomEngine === 'auto') {
+    try {
+      const d = await decideViaPython(req);
+      return { ...d, engine: 'python' };
+    } catch (e) {
+      send('py:status', { state: 'error', message: e.message });
+      send('coomd:stderr', `[python helper] ${e.message} — falling back to JS LLM\n`);
+    }
+  }
+  const d = await decideOomVictims(req);
+  return { ...d, engine: 'llm' };
+}
+
+// ─────────────────────────────────────────────────────────────
+// Python LLM helper — managed by the interface (fork-exec-pipe per decision)
+// ─────────────────────────────────────────────────────────────
+
+// Resolve a usable python interpreter once and cache it.
+function resolvePython() {
+  if (pythonCmd) return pythonCmd;
+  for (const v of PYTHON_VENVS) {
+    if (fs.existsSync(v)) { pythonCmd = v; return v; }
+  }
+  // Fall back to whatever's on PATH; spawn() will surface ENOENT if absent.
+  pythonCmd = PYTHON_FALLBACKS[0];
+  return pythonCmd;
+}
+
+// Spawn helper.py, write the request JSON line to stdin, read the victims
+// JSON line from stdout. Maps xv6 candidate fields (name/sz_kb) onto the
+// helper's Linux-style schema (comm/rss_kb) so both Solar and mock modes work.
+function decideViaPython(req) {
+  return new Promise((resolve, reject) => {
+    if (!fs.existsSync(HELPER_PY)) return reject(new Error('helper.py not found'));
+    const py = resolvePython();
+    const candidates = (req.candidates || []).map((c) => ({
+      pid: c.pid, comm: c.name, rss_kb: c.sz_kb, name: c.name, sz_kb: c.sz_kb,
+    }));
+    const payload = JSON.stringify({
+      policy: OOM_POLICY, candidates, target_free_mb: 64, psi: req.psi,
+    });
+
+    let child;
+    try {
+      child = spawn(py, [HELPER_PY], {
+        cwd: path.dirname(HELPER_PY),
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' },  // robust across host locales
+      });
+    } catch (e) {
+      return reject(e);
+    }
+    send('py:status', { state: 'deciding', pid: child.pid, cmd: py });
+
+    let out = '', err = '';
+    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} }, 30000);
+
+    child.stdout.on('data', (b) => { out += b.toString('utf8'); });
+    child.stderr.on('data', (b) => { err += b.toString('utf8'); });
+    child.on('error', (e) => { clearTimeout(timer); reject(e); });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      const lastLine = out.trim().split('\n').filter(Boolean).pop() || '';
+      try {
+        const parsed = JSON.parse(lastLine);
+        send('py:status', { state: 'ok', code, reasoning: parsed.reasoning });
+        resolve(parsed);
+      } catch (_) {
+        reject(new Error(`helper exited ${code}: ${(err || out).slice(0, 200)}`));
+      }
+    });
+
+    try { child.stdin.write(payload + '\n'); child.stdin.end(); }
+    catch (e) { clearTimeout(timer); reject(e); }
+  });
+}
+
+// Probe for a working interpreter (used at startup and by the UI).
+function checkPython() {
+  return new Promise((resolve) => {
+    const py = resolvePython();
+    let child;
+    try { child = spawn(py, ['--version'], { env: { ...process.env } }); }
+    catch (_) { return resolve({ found: false, cmd: py }); }
+    let ver = '';
+    child.stdout.on('data', (b) => { ver += b.toString('utf8'); });
+    child.stderr.on('data', (b) => { ver += b.toString('utf8'); });
+    child.on('error', () => resolve({ found: false, cmd: py }));
+    child.on('exit', (code) =>
+      resolve({ found: code === 0, cmd: py, version: ver.trim(), helper: fs.existsSync(HELPER_PY) }));
+  });
+}
+
+// Non-streaming Solar call that returns {victims:[pid...], reasoning}.
+// Falls back to the largest non-protected candidate if no key / on error.
+async function decideOomVictims(req) {
+  const candidates = req.candidates || [];
+  const fallback = () => {
+    const safe = candidates
+      .filter((c) => c.pid > 1 && !/^(init|sh|oomd)$/.test(c.name || ''))
+      .sort((a, b) => (b.sz_kb || 0) - (a.sz_kb || 0));
+    return {
+      victims: safe.length ? [safe[0].pid] : [],
+      reasoning: '[fallback] largest non-protected process (no LLM).',
+    };
+  };
+
+  const apiKey = process.env.UPSTAGE_API_KEY;
+  if (!apiKey || apiKey === 'your_api_key_here') return fallback();
+
+  const system = [
+    'You are an OOM victim selector for the xv6 teaching OS running in QEMU.',
+    'You receive a memory-pressure value and a list of candidate processes',
+    '(pid, name, sz_kb). Choose which pid(s) to kill to relieve pressure.',
+    'RULES: never select pid<=1, "init", "sh", or "oomd". Prefer the memory hogs.',
+    'Respond with ONLY a JSON object: {"victims":[pid,...],"reasoning":"short"}.',
+  ].join('\n');
+  const user = JSON.stringify({ psi: req.psi, candidates });
+
+  const resp = await fetch(`${LLM_BASE_URL}/chat/completions`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: LLM_MODEL,
+      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+      temperature: 0,
+      response_format: { type: 'json_object' },
+    }),
+  });
+  if (!resp.ok) return fallback();
+  const data = await resp.json();
+  const content = data.choices?.[0]?.message?.content;
+  try {
+    const parsed = JSON.parse(content);
+    if (!Array.isArray(parsed.victims) || !parsed.victims.length) return fallback();
+    return parsed;
+  } catch (_) {
+    return fallback();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -344,6 +629,28 @@ ipcMain.handle('llm:status',   () => ({
   baseUrl: LLM_BASE_URL,
 }));
 
+// Python helper orchestration (the interface owns the Python side).
+ipcMain.handle('py:check',     () => checkPython());
+ipcMain.handle('oom:engine',   (_e, engine) => {
+  if (['python', 'llm', 'auto'].includes(engine)) oomEngine = engine;
+  return oomEngine;
+});
+// Run a synthetic decision through the current engine so the user can verify
+// the whole xv6→helper.py→victim path from the UI without waiting for pressure.
+ipcMain.handle('oom:test',     async () => {
+  const req = { psi: 42, candidates: [
+    { pid: 1, name: 'init',   sz_kb: 12 },
+    { pid: 2, name: 'sh',     sz_kb: 16 },
+    { pid: 9, name: 'memhog', sz_kb: 81920 },
+  ] };
+  const d = await decideOom(req).catch((e) => ({ victims: [], reasoning: e.message, engine: 'error' }));
+  send('oom:event', { kind: 'decision', source: 'test', engine: d.engine,
+                      victims: (d.victims || []).filter((v) => v > 1),
+                      reasoning: d.reasoning, psi: req.psi,
+                      candCount: req.candidates.length, timestamp: Date.now() });
+  return d;
+});
+
 // ─────────────────────────────────────────────────────────────
 // Window
 // ─────────────────────────────────────────────────────────────
@@ -372,6 +679,13 @@ function createWindow() {
     mainWin.focus();
     startQemu();
     startCoomd();
+    // Probe the Python side the interface manages, and report its readiness.
+    checkPython().then((info) => {
+      send('py:status', {
+        state: info.found && info.helper ? 'ready' : 'missing',
+        cmd: info.cmd, version: info.version, helper: info.helper, engine: oomEngine,
+      });
+    });
   });
 
   mainWin.on('closed', () => {

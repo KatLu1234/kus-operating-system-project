@@ -203,6 +203,18 @@ input, textarea, button { font-family: inherit; }
   white-space: pre-wrap;
   user-select: text;
 }
+.proc-table {
+  background: rgba(31, 122, 58, 0.06);
+  border: 1px solid var(--green-0);
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--green-2);
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre;
+  user-select: text;
+}
 
 /* ── Bottom: system bar ─────────────────────────────────────── */
 .footer-row {
