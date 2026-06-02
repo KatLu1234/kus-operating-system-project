@@ -102,6 +102,9 @@ extern uint64 sys_link(void);
 extern uint64 sys_mkdir(void);
 extern uint64 sys_close(void);
 extern uint64 sys_get_mem_pressure(void);
+extern uint64 sys_get_sys_stat(void);
+extern uint64 sys_get_proc_stats(void);
+extern uint64 sys_get_oom_candidates(void);
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
@@ -128,6 +131,9 @@ static uint64 (*syscalls[])(void) = {
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
 [SYS_get_mem_pressure] sys_get_mem_pressure,
+[SYS_get_sys_stat]       sys_get_sys_stat,
+[SYS_get_proc_stats]     sys_get_proc_stats,
+[SYS_get_oom_candidates] sys_get_oom_candidates,
 };
 
 void

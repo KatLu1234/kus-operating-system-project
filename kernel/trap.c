@@ -172,6 +172,13 @@ clockintr()
     update_psi();
   }
 
+  // Credit one tick to whatever process this CPU was running, so the
+  // monitor (statd) can derive per-process CPU% from the delta. Each CPU
+  // accrues to its own myproc(), so multicore time is summed naturally.
+  struct proc *p = myproc();
+  if(p && p->state == RUNNING)
+    p->cpu_ticks++;
+
   // ask for the next timer interrupt. this also clears
   // the interrupt request. 1000000 is about a tenth
   // of a second.

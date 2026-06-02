@@ -186,6 +186,11 @@ found:
   p->pid = allocpid();
   p->state = USED;
 
+  // Reset per-process accounting counters for the monitor (statd).
+  p->mem_stall_ticks = 0;
+  p->last_stall_start = 0;
+  p->cpu_ticks = 0;
+
   // Release lock to allow kalloc to sleep without causing PSI panic.
   release(&p->lock);
 
@@ -650,7 +655,12 @@ wakeup(void *chan)
   struct proc *p;
 
   for(p = proc; p < &proc[NPROC]; p++) {
-    if(p != myproc()){
+    // Skip myproc(), and skip any proc whose lock this CPU already holds.
+    // The latter happens because the PSI change calls wakeup(&kmem) from
+    // kfree(), and kfree() runs inside freeproc() while the freed proc's
+    // p->lock is held — re-acquiring it here would panic("acquire"). A proc
+    // being freed is never a sleeper on chan, so skipping it is safe.
+    if(p != myproc() && !holding(&p->lock)){
       acquire(&p->lock);
       if(p->state == SLEEPING && p->chan == chan) {
         p->state = RUNNABLE;

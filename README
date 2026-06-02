@@ -1,0 +1,7 @@
+xv6 is a re-implementation of Dennis Ritchie's and Ken Thompson's Unix
+Version 6 (v6).  This copy has been ported to RISC-V for a course OS project
+that adds memory-pressure (PSI) tracking, a kernel-status monitor (statd), and
+an LLM-driven OOM killer (oomd).
+
+This README is bundled into the xv6 file system image by mkfs, so you can read
+it from inside xv6 with:  cat README

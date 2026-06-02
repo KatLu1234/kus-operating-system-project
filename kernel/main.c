@@ -6,6 +6,11 @@
 
 volatile static int started = 0;
 
+// Number of CPUs (harts) that actually came online — reflects QEMU's -smp,
+// which can be smaller than the compile-time NCPU. Used by the kernel monitor
+// to scale CPU% correctly.
+int ncpu_online = 0;
+
 // start() jumps here in supervisor mode on all CPUs.
 void
 main()
@@ -41,5 +46,6 @@ main()
     plicinithart();   // ask PLIC for device interrupts
   }
 
-  scheduler();        
+  __sync_fetch_and_add(&ncpu_online, 1);   // this hart is online
+  scheduler();
 }

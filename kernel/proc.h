@@ -107,4 +107,5 @@ struct proc {
 
   uint64 mem_stall_ticks;      // Total memory stall ticks
   uint64 last_stall_start;     // Start of last memory stall
+  uint64 cpu_ticks;            // Accumulated ticks this proc spent RUNNING
 };

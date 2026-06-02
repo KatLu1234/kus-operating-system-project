@@ -43,3 +43,6 @@ entry("sbrk");
 entry("pause");
 entry("uptime");
 entry("get_mem_pressure");
+entry("get_sys_stat");
+entry("get_proc_stats");
+entry("get_oom_candidates");

@@ -2,6 +2,9 @@
 
 struct stat;
 struct psi_data;
+struct sys_stat;
+struct proc_stat;
+struct oom_cand;
 
 // system calls
 int fork(void);
@@ -26,6 +29,9 @@ char* sys_sbrk(int,int);
 int pause(int);
 int uptime(void);
 int get_mem_pressure(struct psi_data*);
+int get_sys_stat(struct sys_stat*);
+int get_proc_stats(struct proc_stat*, int max);
+int get_oom_candidates(struct oom_cand*, int max);
 
 // ulib.c
 int stat(const char*, struct stat*);

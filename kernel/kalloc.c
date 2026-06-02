@@ -103,3 +103,24 @@ kalloc(void)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
 }
+
+// Number of free physical pages currently on the freelist.
+// Used by the kernel-status monitor (statd) to report memory usage.
+uint64
+kfreepages(void)
+{
+  struct run *r;
+  uint64 n = 0;
+  acquire(&kmem.lock);
+  for(r = kmem.freelist; r; r = r->next)
+    n++;
+  release(&kmem.lock);
+  return n;
+}
+
+// Total number of physical pages the allocator manages (constant after boot).
+uint64
+ktotalpages(void)
+{
+  return (PHYSTOP - PGROUNDUP((uint64)end)) / PGSIZE;
+}

@@ -143,6 +143,23 @@ def ask_mock(policy, candidates, target_free_mb):
 
 
 # ──────────────────────────────────────────────────────────
+# (3.5) 재사용 가능한 결정 함수
+#   coomd(파이프 모드)와 호스트 relay.py(xv6 모드)가 공유한다.
+#   API 키가 있으면 Solar, 없거나 실패하면 mock으로 폴백한다.
+#   반환: {"victims": [pid,...], "reasoning": "...", "confidence": float}
+# ──────────────────────────────────────────────────────────
+def decide_victims(policy, candidates, target_free_mb=500):
+    try:
+        if API_KEY:
+            return ask_solar(policy, candidates, target_free_mb)
+        return ask_mock(policy, candidates, target_free_mb)
+    except Exception as e:
+        result = ask_mock(policy, candidates, target_free_mb)
+        result["reasoning"] = f"[FALLBACK] Solar 호출 실패({e}), mock 사용. " + result.get("reasoning", "")
+        return result
+
+
+# ──────────────────────────────────────────────────────────
 # (4) 메인 — stdin으로 받고, 처리하고, stdout으로 돌려줌
 # ──────────────────────────────────────────────────────────
 def main():
@@ -162,16 +179,8 @@ def main():
     candidates = data.get("candidates", [])
     target_free_mb = data.get("target_free_mb", 500)
 
-    # 키가 있으면 진짜 Solar 호출, 없으면 mock으로 폴백
-    try:
-        if API_KEY:
-            result = ask_solar(policy, candidates, target_free_mb)
-        else:
-            result = ask_mock(policy, candidates, target_free_mb)
-    except Exception as e:
-        # 진짜 호출이 실패해도 시스템이 안 멈추게 mock으로 폴백
-        result = ask_mock(policy, candidates, target_free_mb)
-        result["reasoning"] = f"[FALLBACK] Solar 호출 실패({e}), mock 사용. " + result.get("reasoning", "")
+    # 키가 있으면 진짜 Solar 호출, 없으면 mock으로 폴백 (공유 함수 재사용)
+    result = decide_victims(policy, candidates, target_free_mb)
 
     # 결과를 stdout으로 JSON 한 줄 출력 (C 데몬이 이걸 읽음)
     print(json.dumps(result, ensure_ascii=False), flush=True)
