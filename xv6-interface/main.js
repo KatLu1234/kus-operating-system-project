@@ -6,6 +6,11 @@ const pidusage = require('pidusage');
 const pidtree = require('pidtree');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
+// xv6 now lives in its own subdirectory (a fresh xv6-riscv checkout). `make
+// qemu` must run there. Fall back to PROJECT_ROOT if that dir is absent.
+const XV6_DIR      = fs.existsSync(path.join(PROJECT_ROOT, 'xv6-riscv', 'Makefile'))
+  ? path.join(PROJECT_ROOT, 'xv6-riscv')
+  : PROJECT_ROOT;
 const COOMD_DIR    = path.join(PROJECT_ROOT, 'coomd');
 const COOMD_BIN    = path.join(COOMD_DIR, 'bin', 'coomd');
 
@@ -119,7 +124,7 @@ function startQemu() {
   startedAt = Date.now();
 
   qemu = spawn(BOOT_CMD, {
-    cwd: PROJECT_ROOT,
+    cwd: XV6_DIR,
     shell: '/bin/bash',
     // Become a process-group leader so we can signal the whole tree (make -> qemu).
     detached: true,
@@ -127,7 +132,7 @@ function startQemu() {
 
   send('qemu:start', {
     pid: qemu.pid,
-    cwd: PROJECT_ROOT,
+    cwd: XV6_DIR,
     cmd: BOOT_CMD,
     startedAt,
   });

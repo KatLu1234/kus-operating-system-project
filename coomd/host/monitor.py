@@ -15,9 +15,13 @@ STATE = {1: "USED", 2: "SLEEP", 3: "READY", 4: "RUN", 5: "ZOMBIE"}
 PG_KB = 4   # xv6 page = 4 KiB
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+# xv6 lives in its own checkout dir; fall back to the repo root if absent.
+XV6_DIR = os.path.join(PROJECT_ROOT, "xv6-riscv")
+if not os.path.exists(os.path.join(XV6_DIR, "Makefile")):
+    XV6_DIR = PROJECT_ROOT
 
 qemu = subprocess.Popen(
-    ["make", "qemu"], cwd=PROJECT_ROOT,
+    ["make", "qemu"], cwd=XV6_DIR,
     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
     bufsize=1, universal_newlines=True,
 )
