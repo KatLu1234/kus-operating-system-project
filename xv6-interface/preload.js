@@ -14,6 +14,10 @@ contextBridge.exposeInMainWorld('xv6', {
   stop:      () => ipcRenderer.invoke('qemu:stop'),
   send:      (text) => ipcRenderer.invoke('xv6:stdin', text),
 
+  // Server purpose from the commissioning popup — sent to the LLM with every
+  // OOM kill decision so it protects/sacrifices processes per the operator's intent.
+  setPurpose: (text) => ipcRenderer.invoke('oom:setPurpose', text),
+
   // OOM killer telemetry (structured) — emitted by main.js after parsing coomd EVENT lines
   onOomEvent:    (cb) => ipcRenderer.on('oom:event',    (_, d) => cb(d)),
   onOomPressure: (cb) => ipcRenderer.on('oom:pressure', (_, d) => cb(d)),

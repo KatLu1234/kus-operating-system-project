@@ -13,6 +13,10 @@ const XV6_DIR      = fs.existsSync(path.join(PROJECT_ROOT, 'xv6-riscv', 'Makefil
   : PROJECT_ROOT;
 const COOMD_DIR    = path.join(PROJECT_ROOT, 'coomd');
 const COOMD_BIN    = path.join(COOMD_DIR, 'bin', 'coomd');
+// Bridge file: the interface writes the live xv6 state here (parsed from
+// statd's @@STAT stream) so the coomd Linux daemon reflects REAL xv6
+// processes + PSI instead of its old hard-coded chrome/firefox mock.
+const COOMD_STATE_FILE = path.join(COOMD_DIR, '.xv6_state');
 
 // Python LLM helper (R3). The interface runs this per OOM decision via a
 // fork-exec-pipe, exactly like the coomd C daemon does, so the interface is
@@ -29,6 +33,18 @@ const PYTHON_FALLBACKS = ['python3', 'python'];
 const OOM_POLICY = process.env.OOM_POLICY ||
   'Keep init, the shell (sh) and oomd alive. Memory hogs such as memhog are ' +
   'fine to kill to relieve pressure.';
+
+// Operator-provided server purpose, captured by the commissioning popup at
+// startup and folded into every LLM OOM decision (both engines). Empty until set.
+let serverPurpose = process.env.SERVER_PURPOSE || '';
+
+// The effective policy text: base policy + the operator's stated server purpose.
+function policyWithPurpose() {
+  return serverPurpose
+    ? `${OOM_POLICY}\nThe operator described this server's purpose as: "${serverPurpose}". ` +
+      'Honor that purpose: protect processes essential to it and prefer killing ones that are not.'
+    : OOM_POLICY;
+}
 
 // OOM decision engine: 'python' (helper.py) → fall back to 'llm' (JS fetch) →
 // heuristic. 'llm' skips Python; 'auto' is an alias for 'python'.
@@ -60,6 +76,7 @@ let qemuLineBuf = '';
 let prevStat = null;          // previous @@STAT sample, for CPU% deltas
 let oomBusy = false;          // guard so we answer one @@OOM_REQ at a time
 let pythonCmd = null;         // resolved interpreter path (or null if missing)
+let monitorsStarted = false;  // guard so we auto-launch statd+oomd only once per boot
 
 const PG_KB = 4;              // xv6 page = 4 KiB
 
@@ -139,6 +156,7 @@ function startQemu() {
 
   qemuLineBuf = '';
   prevStat = null;
+  monitorsStarted = false;
   qemu.stdout.on('data', (b) => {
     const s = b.toString('utf8');
     appendTail(s);
@@ -153,6 +171,8 @@ function startQemu() {
   qemu.on('exit', (code, signal) => {
     send('qemu:exit', { code, signal });
     if (metricsTimer) { clearInterval(metricsTimer); metricsTimer = null; }
+    // Remove the stale xv6 bridge file so coomd stops reporting dead state.
+    try { fs.unlinkSync(COOMD_STATE_FILE); } catch (_) {}
     qemu = null;
   });
 
@@ -196,6 +216,41 @@ function stateName(st) {
   return ({ 1: 'USED', 2: 'SLEEP', 3: 'READY', 4: 'RUN', 5: 'ZOMBIE' }[st]) || '?';
 }
 
+// Auto-start the kernel monitors once the shell is up, so the interface always
+// receives real xv6 metrics (statd → @@STAT, meaningful memory graph) and OOM
+// decisions are driven automatically (oomd → @@OOM_REQ) without the user having
+// to type the commands. Injected through the shell; both survive sh restarts as
+// init-reparented background processes. Only the Electron interface does this,
+// so CLI / relay.py paths stay free of @@STAT.
+// Surface xv6 oomd's own console lines as structured events so the dashboard
+// THRESHOLD field and the OOM event log reflect the real in-kernel watcher.
+function parseOomdLine(line) {
+  let m = line.match(/\[oomd\] started \(threshold=(\d+)%\)/);
+  if (m) {
+    send('oom:event', { kind: 'startup', threshold: Number(m[1]), dry_run: false,
+                        source: 'xv6-oomd', timestamp: Date.now() });
+    return;
+  }
+  m = line.match(/\[oomd\] killing pid (\d+)/);
+  if (m) {
+    send('oom:event', { kind: 'kill', pid: Number(m[1]), signal: 'kill',
+                        source: 'xv6-oomd', timestamp: Date.now() });
+  }
+}
+
+function maybeAutostartMonitors(line) {
+  if (monitorsStarted) return;
+  if (/init: starting sh/.test(line)) {
+    monitorsStarted = true;
+    // Staggered, with a small delay so sh is ready to read stdin first.
+    // statd's arg is the sample period in ticks (~0.1s each). Use 2 (~0.2s,
+    // ~5 Hz) so the dashboard reflects process state changes near-instantly
+    // instead of the 1 s default.
+    setTimeout(() => writeStdin('statd 2 &\n'), 800);   // dashboard feed (~5 Hz)
+    setTimeout(() => writeStdin('oomd &\n'), 1200);     // OOM watcher
+  }
+}
+
 function routeQemuOutput(chunk) {
   qemuLineBuf += chunk;
   let nl;
@@ -210,6 +265,8 @@ function routeQemuOutput(chunk) {
       /* other tags (e.g. @@OOM_RESP echo, @@STAT_ERR) are hidden from console */
     } else {
       send('qemu:stdout', line + '\n');                     // ordinary console line
+      maybeAutostartMonitors(line);
+      parseOomdLine(line);
     }
   }
   // A newline-less tail (the shell prompt "$ ") must show immediately, but if it
@@ -255,6 +312,7 @@ function handleStatLine(json) {
     running: o.running,
     runnable: o.runnable,
     psiSome: o.psi_some,
+    psiSome60: o.psi_some60 ?? 0,
     psiFull: o.psi_full,
     procCount: procs.length,
     procs: procs.sort((a, b) => b.cpuPct - a.cpuPct),
@@ -262,6 +320,25 @@ function handleStatLine(json) {
 
   prevStat = o;
   send('kstat:update', payload);
+
+  // Bridge the real xv6 state to the coomd daemon (replaces its mock stubs).
+  writeXv6StateForCoomd(o.psi_some | 0, o.psi_full | 0, procs);
+}
+
+// Export the live xv6 snapshot to the coomd bridge file. coomd reads this each
+// loop: a "PSI <some> <full>" line plus one "PROC <pid> <rss_kb> <name>" line
+// per process. Written atomically (temp + rename) so coomd never sees a torn
+// file. Best-effort — a write failure must not disrupt the dashboard.
+function writeXv6StateForCoomd(psiSome, psiFull, procs) {
+  try {
+    let txt = `PSI ${psiSome} ${psiFull}\n`;
+    for (const p of procs) {
+      txt += `PROC ${p.pid} ${p.memKb | 0} ${p.name}\n`;
+    }
+    const tmp = COOMD_STATE_FILE + '.tmp';
+    fs.writeFileSync(tmp, txt);
+    fs.renameSync(tmp, COOMD_STATE_FILE);
+  } catch (_) { /* coomd bridge is best-effort */ }
 }
 
 // xv6 -> host OOM request: ask the LLM which candidate to kill, inject reply.
@@ -338,7 +415,8 @@ function decideViaPython(req) {
       pid: c.pid, comm: c.name, rss_kb: c.sz_kb, name: c.name, sz_kb: c.sz_kb,
     }));
     const payload = JSON.stringify({
-      policy: OOM_POLICY, candidates, target_free_mb: 64, psi: req.psi,
+      policy: policyWithPurpose(), server_purpose: serverPurpose,
+      candidates, target_free_mb: 64, psi: req.psi,
     });
 
     let child;
@@ -413,9 +491,13 @@ async function decideOomVictims(req) {
     'You receive a memory-pressure value and a list of candidate processes',
     '(pid, name, sz_kb). Choose which pid(s) to kill to relieve pressure.',
     'RULES: never select pid<=1, "init", "sh", or "oomd". Prefer the memory hogs.',
+    serverPurpose
+      ? `The operator described this server's purpose as: "${serverPurpose}". ` +
+        'Honor it: protect processes essential to that purpose and prefer killing ones that are not.'
+      : '',
     'Respond with ONLY a JSON object: {"victims":[pid,...],"reasoning":"short"}.',
-  ].join('\n');
-  const user = JSON.stringify({ psi: req.psi, candidates });
+  ].filter(Boolean).join('\n');
+  const user = JSON.stringify({ psi: req.psi, server_purpose: serverPurpose, candidates });
 
   const resp = await fetch(`${LLM_BASE_URL}/chat/completions`, {
     method: 'POST',
@@ -508,7 +590,8 @@ async function startCoomd() {
     cwd: COOMD_DIR,
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env },
+    // Tell coomd where to read the live xv6 state bridge file.
+    env: { ...process.env, COOMD_XV6_STATE: COOMD_STATE_FILE },
   });
   send('coomd:status', { state: 'running', pid: coomd.pid, args: COOMD_ARGS });
 
@@ -627,6 +710,16 @@ ipcMain.handle('qemu:stop',    () => { stopCoomd(); stopQemu(); });
 ipcMain.handle('coomd:restart', () => { stopCoomd(); setTimeout(startCoomd, 500); });
 ipcMain.handle('coomd:stop',    () => stopCoomd());
 ipcMain.handle('xv6:stdin',    (_e, text) => writeStdin(text));
+ipcMain.handle('oom:setPurpose', (_e, text) => {
+  serverPurpose = String(text || '').slice(0, 600).trim();
+  // Surface it in the OOM event log so the operator sees it was registered.
+  if (serverPurpose) {
+    send('oom:event', { kind: 'decision', source: 'operator', engine: 'policy',
+                        victims: [], reasoning: `server purpose set: ${serverPurpose}`,
+                        timestamp: Date.now() });
+  }
+  return serverPurpose;
+});
 ipcMain.handle('llm:chat',     (e, { messages }) => streamChat(messages || [], e.sender));
 ipcMain.handle('llm:status',   () => ({
   ready: !!process.env.UPSTAGE_API_KEY && process.env.UPSTAGE_API_KEY !== 'your_api_key_here',

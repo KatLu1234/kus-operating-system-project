@@ -12,8 +12,9 @@
   </head>
   <body>
     <main class="hud">
+      <!-- LEFT: status + CPU/IO -->
       <section class="panel panel-left">
-        <div class="panel-title">// XV6 METRICS</div>
+        <div class="panel-title">// XV6 STATUS</div>
         <div class="panel-body metrics-body">
           <div class="brand">
             <span class="bracket">[</span>
@@ -34,33 +35,10 @@
           </div>
 
           <div class="metric">
-            <div class="metric-head"><label>MEMORY (xv6)</label><b id="mem-value">-- MB</b></div>
-            <canvas class="metric-graph" id="mem-graph" width="240" height="48"></canvas>
-          </div>
-
-          <div class="metric">
             <div class="metric-head"><label>STDOUT (B/s)</label><b id="io-value">-- B/s</b></div>
             <canvas class="metric-graph" id="io-graph" width="240" height="48"></canvas>
           </div>
-        </div>
-      </section>
 
-      <section class="panel panel-center">
-        <div class="panel-title">// CONSOLE — make clean &amp;&amp; make qemu</div>
-        <pre class="console" id="console"></pre>
-        <form class="stdin-row" id="stdin-form" autocomplete="off">
-          <span class="stdin-prompt">$</span>
-          <input id="stdin-input" type="text" spellcheck="false"
-                 placeholder="type into xv6 — Enter to send" />
-        </form>
-      </section>
-
-      <section class="panel panel-right">
-        <div class="panel-title">
-          <span>// PROCESS &amp; OOM</span>
-          <span class="title-meta" id="llm-meta">disconnected</span>
-        </div>
-        <div class="panel-body right-body">
           <div class="subhead">PROCESS</div>
           <ul class="status-list">
             <li><span>CMD</span><b id="proc-cmd">--</b></li>
@@ -68,6 +46,53 @@
             <li><span>ROOT PID</span><b id="proc-pid">--</b></li>
             <li><span>STARTED</span><b id="proc-started">--</b></li>
             <li><span>EXIT</span><b id="proc-exit">--</b></li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- CENTER: console during boot, swaps to the service dashboard once up -->
+      <section class="panel panel-center">
+        <div class="panel-title">
+          <span id="center-title">// CONSOLE — make clean &amp;&amp; make qemu</span>
+          <span class="title-meta"><button id="btn-view" class="mini-btn">DASHBOARD</button></span>
+        </div>
+        <div class="panel-body center-body">
+          <div id="console-view" class="console-view">
+            <pre class="console" id="console"></pre>
+            <form class="stdin-row" id="stdin-form" autocomplete="off">
+              <span class="stdin-prompt">$</span>
+              <input id="stdin-input" type="text" spellcheck="false"
+                     placeholder="type into xv6 — Enter to send" />
+            </form>
+          </div>
+          <div id="service-view" class="service-view hidden">
+            <div class="service-hint">
+              Launch the services you want, then drive them toward an out-of-memory
+              event. <b>Gray</b> = not running · <b class="hint-run">Green</b> = running ·
+              <b class="hint-kill">Red</b> = killed by the OOM killer.
+            </div>
+            <div class="service-grid" id="service-grid"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RIGHT: memory usage + OOM -->
+      <section class="panel panel-right">
+        <div class="panel-title">
+          <span>// MEMORY &amp; OOM</span>
+          <span class="title-meta" id="llm-meta">disconnected</span>
+        </div>
+        <div class="panel-body right-body">
+          <div class="metric metric-big">
+            <div class="metric-head"><label>MEMORY (xv6)</label><b id="mem-value">-- MB</b></div>
+            <canvas class="metric-graph metric-graph-tall" id="mem-graph" width="300" height="84"></canvas>
+          </div>
+
+          <div class="subhead">PRESSURE (PSI)</div>
+          <ul class="status-list">
+            <li><span>some/avg10</span><b id="psi-some-10">--</b></li>
+            <li><span>some/avg60</span><b id="psi-some-60">--</b></li>
+            <li><span>full/avg10</span><b id="psi-full-10">--</b></li>
           </ul>
 
           <div class="subhead">OOM</div>
@@ -77,15 +102,9 @@
             <li><span>COOMD</span><b id="coomd-state">--</b></li>
             <li><span>COOMD PID</span><b id="coomd-pid">--</b></li>
             <li><span>THRESHOLD</span><b id="oom-threshold">--</b></li>
-            <li><span>PSI some/avg10</span><b id="psi-some-10">--</b></li>
-            <li><span>PSI some/avg60</span><b id="psi-some-60">--</b></li>
-            <li><span>PSI full/avg10</span><b id="psi-full-10">--</b></li>
             <li><span>LAST CALL</span><b id="oom-last">--</b></li>
             <li><span>VICTIMS</span><b id="oom-victims">0</b></li>
           </ul>
-
-          <div class="subhead">PROCESSES (xv6)</div>
-          <pre class="proc-table" id="proc-table">(no data)</pre>
 
           <div class="subhead">EVENTS</div>
           <pre class="oom-log" id="oom-log">(no OOM events yet)</pre>
@@ -94,23 +113,56 @@
 
       <section class="panel panel-bottom">
         <div class="panel-title">// SYSTEM</div>
-        <div class="panel-body footer-row">
-          <span>STATUS <b class="ok" id="foot-status">BOOTING</b></span>
-          <span>QEMU <b id="foot-pid">--</b></span>
-          <span>COOMD <b id="foot-coomd">--</b></span>
-          <span>LLM <b id="foot-llm">--</b></span>
-          <span>ELECTRON <b id="foot-electron">--</b></span>
-          <span>PY <b id="foot-py">--</b></span>
-          <span class="dim">[ESC] quit</span>
-          <span class="footer-actions">
-            <button id="btn-engine">ENGINE: PYTHON</button>
-            <button id="btn-test-oom">TEST LLM</button>
-            <button id="btn-restart">RESTART</button>
-            <button id="btn-stop">STOP</button>
-          </span>
+        <div class="panel-body footer-col">
+          <form class="cmd-bar" id="cmd-form" autocomplete="off">
+            <span class="cmd-prompt">xv6 $</span>
+            <input id="cmd-input" type="text" spellcheck="false"
+                   placeholder="run a command in xv6 — e.g.  database 24 &amp;   ·   oomgen   ·   ls   (Enter to send)" />
+            <button type="submit" class="mini-btn">SEND</button>
+          </form>
+          <div class="footer-row">
+            <span>STATUS <b class="ok" id="foot-status">BOOTING</b></span>
+            <span>QEMU <b id="foot-pid">--</b></span>
+            <span>COOMD <b id="foot-coomd">--</b></span>
+            <span>LLM <b id="foot-llm">--</b></span>
+            <span>ELECTRON <b id="foot-electron">--</b></span>
+            <span>PY <b id="foot-py">--</b></span>
+            <span class="dim">[ESC] quit</span>
+            <span class="footer-actions">
+              <button id="btn-engine">ENGINE: PYTHON</button>
+              <button id="btn-test-oom">TEST LLM</button>
+              <button id="btn-restart">RESTART</button>
+              <button id="btn-stop">STOP</button>
+            </span>
+          </div>
         </div>
       </section>
     </main>
+
+    <!-- Server commissioning popup: asks the operator the server's purpose.
+         The purpose is sent to the LLM with every OOM kill decision. -->
+    <div class="modal-overlay" id="commission-overlay">
+      <div class="modal-scan"></div>
+      <div class="modal-card">
+        <div class="modal-glyph">◇&nbsp;&nbsp;XV6 // OOM&nbsp;&nbsp;◇</div>
+        <h1 class="modal-title">SERVER COMMISSIONING</h1>
+        <p class="modal-sub">
+          Describe this server's <b>purpose</b>. When memory runs low, the LLM uses
+          this description to decide which processes to protect and which to kill.
+        </p>
+        <textarea id="commission-input" class="modal-input" rows="3" spellcheck="false"
+          placeholder="e.g. Real-time payment processing server. Always protect database and security; analytics and logger may be sacrificed first."></textarea>
+        <div class="modal-presets" id="commission-presets">
+          <button type="button" data-preset="Real-time payment processing server. Never kill the database or security modules; sacrifice analytics, logger and cache first.">💳 Payment server</button>
+          <button type="button" data-preset="Security gateway handling user authentication and sessions. Protect security, gateway and endpoint above all; kill messaging and analytics first.">🔐 Auth gateway</button>
+          <button type="button" data-preset="Data analytics batch cluster. Protect the database, but front-end services like server and endpoint may be killed freely to reclaim memory.">📊 Analytics cluster</button>
+        </div>
+        <div class="modal-actions">
+          <button id="commission-go" class="modal-go">▶ INITIALIZE SERVER</button>
+          <button id="commission-skip" class="modal-skip">skip</button>
+        </div>
+      </div>
+    </div>
 
     <script src="renderer.js"></script>
   </body>

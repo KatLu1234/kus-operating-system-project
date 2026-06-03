@@ -25,7 +25,12 @@
   const procStarted = $('proc-started');
   const procExit    = $('proc-exit');
 
-  const procTable   = $('proc-table');
+  const serviceGrid = $('service-grid');
+  const consoleView = $('console-view');
+  const serviceView = $('service-view');
+  const btnView     = $('btn-view');
+  const centerTitle = $('center-title');
+  const cardEls     = {};   // service id -> card element
 
   const psiSome10   = $('psi-some-10');
   const psiSome60   = $('psi-some-60');
@@ -52,6 +57,43 @@
   const btnRestart  = $('btn-restart');
   const btnStop     = $('btn-stop');
 
+  const cmdForm     = $('cmd-form');
+  const cmdInput    = $('cmd-input');
+
+  // ── Server commissioning popup ──────────────────────────────
+  // Shown on load; collects the server's purpose and ships it to main.js so the
+  // LLM gets it with every OOM kill decision.
+  const commissionOverlay = $('commission-overlay');
+  const commissionInput   = $('commission-input');
+  const commissionGo      = $('commission-go');
+  const commissionSkip    = $('commission-skip');
+
+  function closeCommission() {
+    if (commissionOverlay) commissionOverlay.classList.add('hidden');
+    try { stdinInput && stdinInput.focus(); } catch (_) {}
+  }
+  function submitCommission() {
+    const txt = ((commissionInput && commissionInput.value) || '').trim();
+    try { window.xv6 && window.xv6.setPurpose && window.xv6.setPurpose(txt); } catch (_) {}
+    closeCommission();
+  }
+  if (commissionGo)   commissionGo.addEventListener('click', submitCommission);
+  if (commissionSkip) commissionSkip.addEventListener('click', closeCommission);
+  if (commissionInput) {
+    // Ctrl/Cmd+Enter submits from the textarea.
+    commissionInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitCommission(); }
+    });
+    setTimeout(() => { try { commissionInput.focus(); } catch (_) {} }, 100);
+  }
+  if (commissionOverlay) {
+    commissionOverlay.querySelectorAll('[data-preset]').forEach((b) => {
+      b.addEventListener('click', () => {
+        if (commissionInput) { commissionInput.value = b.getAttribute('data-preset'); commissionInput.focus(); }
+      });
+    });
+  }
+
   // ── State ───────────────────────────────────────────────────
   const HISTORY = 90;
   const cpuHist = [];
@@ -61,8 +103,13 @@
   let bytesAcc  = 0;
   let bytesLast = 0;
   let memMaxMB  = 64;
+  // Stable y-axis ceiling for the legacy host-QEMU memory graph, so its line
+  // shows a true fraction instead of hugging the top of the chart.
+  const HOST_MEM_MAX_MB = 512;
   let oomEventCount = 0;
   let kstatLive = false;   // true once xv6 statd is feeding kstat:update
+  const lastProcByPid = new Map();  // pid -> {pid,name,memKb} last seen alive (resolves victims)
+  const killedNames   = new Map();  // service name -> {pid,memKb,at} OOM-killed (card turns red)
 
   // ── Utils ───────────────────────────────────────────────────
   const pad = (n) => String(n).padStart(2, '0');
@@ -123,7 +170,7 @@
 
   function redraw() {
     drawSparkline(cpuCanvas, cpuHist, { min: 0, max: 100 });
-    drawSparkline(memCanvas, memHist, { min: 0, max: Math.max(memMaxMB, ...memHist, 64) });
+    drawSparkline(memCanvas, memHist, { min: 0, max: Math.max(memMaxMB, 64) });
     drawSparkline(ioCanvas,  ioHist,  { min: 0 });
   }
 
@@ -150,13 +197,21 @@
     if (atBottom) consoleEl.scrollTop = consoleEl.scrollHeight;
   }
 
-  stdinForm.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const v = stdinInput.value;
-    stdinInput.value = '';
+  // Shared by the in-console input and the always-visible bottom command bar.
+  function sendCommand(v) {
     if (!window.xv6) return;
     window.xv6.send(v + '\n');
     appendConsole(v + '\n', 'in');
+  }
+  stdinForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    sendCommand(stdinInput.value);
+    stdinInput.value = '';
+  });
+  if (cmdForm) cmdForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    sendCommand(cmdInput.value);
+    cmdInput.value = '';
   });
 
   // ── OOM log ─────────────────────────────────────────────────
@@ -185,6 +240,15 @@
         appendOomLog(`decision[${ev.source || '?'}] engine=${ev.engine || '?'} `
           + `psi=${ev.psi ?? '?'} victims=[${(ev.victims || []).join(',')}]`);
         if (ev.reasoning) appendOomLog(`  reason: ${ev.reasoning}`);
+        // Mark the decided victims as OOM-killed so their service card turns red.
+        // Resolve each pid to its service name via the last statd snapshot; only
+        // real, previously-seen processes are marked (skips synthetic test pids).
+        if (Array.isArray(ev.victims)) {
+          for (const pid of ev.victims) {
+            const info = lastProcByPid.get(pid);
+            if (info) killedNames.set(info.name, { pid, memKb: info.memKb, at: Date.now() });
+          }
+        }
         break;
       case 'kill':
         appendOomLog(`kill pid=${ev.pid} comm=${ev.comm || '?'} signal=${ev.signal || 'SIGTERM'}${ev.dry_run ? ' [dry-run]' : ''}`);
@@ -252,16 +316,173 @@
     if (s.state === 'error' && s.message) appendOomLog(`  python error: ${s.message}`);
   }
 
-  // ── xv6 internal process table (from statd via kstat:update) ─
-  function renderProcTable(procs) {
-    if (!procs || !procs.length) { procTable.textContent = '(no data)'; return; }
-    const head = ` PID  NAME           STATE   MEM(KB)  CPU%`;
-    const rows = procs.slice(0, 12).map((p) =>
-      ` ${String(p.pid).padStart(3)}  ${p.name.padEnd(13).slice(0, 13)} ` +
-      `${p.state.padEnd(6)} ${String(p.memKb).padStart(8)} ${p.cpuPct.toFixed(1).padStart(5)}`
-    );
-    procTable.textContent = [head, ...rows].join('\n');
+  // ── Service dashboard (virtual forms, one card per service type) ─
+  // Each card mirrors a real xv6 process the user launches. Its colour reflects
+  // the kernel-reported state: gray = not running, green = running, red = killed
+  // by the OOM killer. State is refreshed every statd @@STAT report.
+  const SERVICES = [
+    { id: 'database', label: 'DATABASE', icon: '🗄', mb: 24, form:
+      `<div class="vf-line">SELECT * FROM orders LIMIT 3;</div>
+       <div class="vf-grid3"><span>#1042</span><span>paid</span><span>$42.00</span>
+         <span>#1043</span><span>paid</span><span>$8.50</span>
+         <span>#1044</span><span>ship</span><span>$120.0</span></div>
+       <div class="vf-foot2">conns 12 · 340 qps</div>` },
+    { id: 'server', label: 'WEB SERVER', icon: '🌐', mb: 12, form:
+      `<div class="vf-line ok">GET /api/v1/users 200 12ms</div>
+       <div class="vf-line ok">POST /api/orders 201 31ms</div>
+       <div class="vf-line warn">GET /api/cart 503 --</div>
+       <div class="vf-foot2">1.2k rps · p99 38ms</div>` },
+    { id: 'security', label: 'SECURITY', icon: '🛡', mb: 10, form:
+      `<div class="vf-badges"><span class="vf-tag ok">TLS ✓</span><span class="vf-tag ok">WAF ✓</span></div>
+       <div class="vf-line">sessions 318 · mfa 96%</div>
+       <div class="vf-line warn">blocked 7 intrusions</div>` },
+    { id: 'endpoint', label: 'ENDPOINT', icon: '🔌', mb: 6, form:
+      `<div class="vf-line">/api/v1/payments</div>
+       <div class="vf-line">/api/v1/users</div>
+       <div class="vf-line">/api/v1/inventory</div>
+       <div class="vf-foot2">14 routes · healthy</div>` },
+    { id: 'cache', label: 'CACHE', icon: '⚡', mb: 28, form:
+      `<div class="vf-bar"><i style="width:92%"></i></div>
+       <div class="vf-foot2">hit 92% · 2.1M keys</div>` },
+    { id: 'logger', label: 'LOGGER', icon: '📝', mb: 4, form:
+      `<div class="vf-line dim">12:01:03 INFO request ok</div>
+       <div class="vf-line dim">12:01:04 WARN slow query</div>
+       <div class="vf-line dim">12:01:05 INFO flush 4k</div>` },
+    { id: 'gateway', label: 'GATEWAY', icon: '🚪', mb: 8, form:
+      `<div class="vf-line">/* → server</div>
+       <div class="vf-line">/auth → security</div>
+       <div class="vf-line">/q → messaging</div>
+       <div class="vf-foot2">3 upstreams</div>` },
+    { id: 'scheduler', label: 'SCHEDULER', icon: '⏱', mb: 5, form:
+      `<div class="vf-line">▶ nightly-report 02:00</div>
+       <div class="vf-line">▶ cleanup-temp */15</div>
+       <div class="vf-foot2">8 jobs queued</div>` },
+    { id: 'analytics', label: 'ANALYTICS', icon: '📊', mb: 20, form:
+      `<div class="vf-chart"><i style="height:40%"></i><i style="height:70%"></i><i style="height:55%"></i><i style="height:90%"></i><i style="height:65%"></i></div>
+       <div class="vf-foot2">3.4M events/min</div>` },
+    { id: 'messaging', label: 'MESSAGING', icon: '✉', mb: 14, form:
+      `<div class="vf-line">queue: orders depth 1.2k</div>
+       <div class="vf-line">queue: emails depth 340</div>
+       <div class="vf-foot2">consumers 6</div>` },
+  ];
+
+  function setCardState(card, state, info) {
+    card.classList.remove('is-offline', 'is-running', 'is-killed', 'is-starting');
+    card.classList.add('is-' + state);
+    const badge  = card.querySelector('.svc-badge');
+    const meta   = card.querySelector('.svc-meta');
+    const launch = card.querySelector('.svc-launch');
+    const stop   = card.querySelector('.svc-stop');
+    if (state === 'running') {
+      badge.textContent = 'RUNNING';
+      meta.textContent = `pid ${info.pid} · ${(info.memKb / 1024).toFixed(1)} MB`;
+      launch.classList.add('hidden'); stop.classList.remove('hidden');
+    } else if (state === 'killed') {
+      badge.textContent = 'KILLED';
+      meta.textContent = info && info.memKb ? `OOM · was ${(info.memKb / 1024).toFixed(1)} MB` : 'OOM killed';
+      launch.classList.remove('hidden'); stop.classList.add('hidden');
+    } else if (state === 'starting') {
+      badge.textContent = 'STARTING…';
+      launch.classList.add('hidden'); stop.classList.add('hidden');
+    } else {
+      badge.textContent = 'OFFLINE';
+      // Show the service's typical footprint so its memory weight is visible
+      // even before launch (cache ~28 MB vs logger ~4 MB).
+      meta.textContent = card.dataset.mb ? `idle · ~${card.dataset.mb} MB` : '—';
+      launch.classList.remove('hidden'); stop.classList.add('hidden');
+    }
   }
+
+  function buildServiceGrid() {
+    if (!serviceGrid) return;
+    serviceGrid.innerHTML = '';
+    for (const s of SERVICES) {
+      const card = document.createElement('div');
+      card.className = 'svc-card is-offline';
+      card.dataset.id = s.id;
+      card.dataset.mb = s.mb;
+      card.innerHTML =
+        `<div class="svc-head"><span class="svc-icon">${s.icon}</span>` +
+        `<span class="svc-name">${esc(s.label)}</span>` +
+        `<span class="svc-badge">OFFLINE</span></div>` +
+        `<div class="svc-form">${s.form}</div>` +
+        `<div class="svc-foot"><span class="svc-meta">—</span>` +
+        `<span class="svc-actions">` +
+        `<button class="svc-launch mini-btn">▶ start</button>` +
+        `<button class="svc-stop mini-btn hidden">■ stop</button>` +
+        `</span></div>`;
+      card.querySelector('.svc-launch').addEventListener('click', () => {
+        // Size each launch to a footprint that fits the service type (±15%), so
+        // cache/database grab far more RAM than logger/scheduler.
+        const mb = Math.max(2, Math.round(s.mb * (0.85 + Math.random() * 0.3)));
+        if (window.xv6) window.xv6.send(`${s.id} ${mb} &\n`);
+        card.dataset.startAt = String(Date.now());
+        setCardState(card, 'starting');
+      });
+      card.querySelector('.svc-stop').addEventListener('click', () => {
+        const pid = card.dataset.pid;
+        if (pid && window.xv6) window.xv6.send(`kill ${pid}\n`);
+      });
+      cardEls[s.id] = card;
+      serviceGrid.appendChild(card);
+    }
+  }
+
+  // Refresh card states from a statd snapshot (called every @@STAT report).
+  function updateServiceCards(procs) {
+    const live = procs || [];
+    const aliveByName = new Map();
+    for (const p of live) {
+      lastProcByPid.set(p.pid, { pid: p.pid, name: p.name, memKb: p.memKb });
+      if (!aliveByName.has(p.name)) aliveByName.set(p.name, p);
+    }
+    for (const s of SERVICES) {
+      const card = cardEls[s.id];
+      if (!card) continue;
+      const alive = aliveByName.get(s.id);
+      if (alive) {
+        killedNames.delete(s.id);              // it's back — clear any kill mark
+        card.dataset.pid = String(alive.pid);
+        setCardState(card, 'running', { pid: alive.pid, memKb: alive.memKb });
+      } else if (killedNames.has(s.id)) {
+        setCardState(card, 'killed', killedNames.get(s.id));
+      } else {
+        const startAt = +card.dataset.startAt || 0;
+        // keep "starting" briefly so the card doesn't flicker before it appears
+        if (!(card.classList.contains('is-starting') && Date.now() - startAt < 6000))
+          setCardState(card, 'offline');
+      }
+    }
+  }
+
+  function resetServiceCards() {
+    for (const s of SERVICES) {
+      const card = cardEls[s.id];
+      if (card) { delete card.dataset.startAt; delete card.dataset.pid; setCardState(card, 'offline'); }
+    }
+  }
+
+  // ── Center view swap (console <-> service dashboard) ─────────
+  let dashboardShown = false;
+  function showDashboard() {
+    if (!serviceView || !consoleView) return;
+    dashboardShown = true;
+    consoleView.classList.add('hidden');
+    serviceView.classList.remove('hidden');
+    if (centerTitle) centerTitle.textContent = '// SERVICES — launch & watch OOM';
+    if (btnView) btnView.textContent = 'CONSOLE';
+  }
+  function showConsole() {
+    if (!serviceView || !consoleView) return;
+    dashboardShown = false;
+    serviceView.classList.add('hidden');
+    consoleView.classList.remove('hidden');
+    if (centerTitle) centerTitle.textContent = '// CONSOLE — make clean && make qemu';
+    if (btnView) btnView.textContent = 'DASHBOARD';
+  }
+
+  buildServiceGrid();
+  if (btnView) btnView.addEventListener('click', () => (dashboardShown ? showConsole() : showDashboard()));
 
   // ── IPC wiring ──────────────────────────────────────────────
   if (!window.xv6) {
@@ -269,6 +490,13 @@
   } else {
     window.xv6.onStart((d) => {
       startedAt = d.startedAt;
+      // Reset graph + process state for a fresh boot so nothing carries over.
+      kstatLive = false;
+      memMaxMB = 64;
+      cpuHist.length = 0; memHist.length = 0; ioHist.length = 0;
+      lastProcByPid.clear(); killedNames.clear();
+      resetServiceCards();
+      showConsole();   // back to the boot console until the new boot succeeds
       procCmd.textContent     = d.cmd;
       procCwd.textContent     = d.cwd;
       procCwd.title           = d.cwd;
@@ -287,6 +515,7 @@
       if (stateEl.textContent === 'BOOTING' && /(\$ |init: starting sh|xv6 kernel is booting)/.test(s)) {
         stateEl.textContent = 'RUNNING';
         footStatus.textContent = 'RUNNING';
+        showDashboard();   // boot succeeded — swap the main panel to the dashboard
       }
     });
     window.xv6.onStderr((s) => appendConsole(s, 'err'));
@@ -314,9 +543,10 @@
       procsEl.textContent = `${k.procCount} (run ${k.running}/ready ${k.runnable})`;
 
       psiSome10.textContent = k.psiSome + '%';
+      psiSome60.textContent = (k.psiSome60 ?? 0) + '%';
       psiFull10.textContent = k.psiFull + '%';
 
-      renderProcTable(k.procs);
+      updateServiceCards(k.procs);
       redraw();
     });
 
@@ -327,7 +557,9 @@
       pushHistory(cpuHist, cpu);
       const memMB = memory / 1024 / 1024;
       pushHistory(memHist, memMB);
-      memMaxMB = Math.max(memMaxMB, memMB * 1.2);
+      // Stable ceiling (not a self-following 1.2× ratchet) so the host graph
+      // doesn't sit pinned at the top; only grows if RSS truly exceeds it.
+      memMaxMB = Math.max(HOST_MEM_MAX_MB, memMB * 1.1);
       cpuValueEl.textContent = cpu.toFixed(1) + '% (host)';
       memValueEl.textContent = memMB.toFixed(1) + ' MB (host)';
       procsEl.textContent    = String(alive);
