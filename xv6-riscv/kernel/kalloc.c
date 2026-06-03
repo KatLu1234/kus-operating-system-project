@@ -1,0 +1,127 @@
+// Physical memory allocator, for user processes,
+// kernel stacks, page-table pages,
+// and pipe buffers. Allocates whole 4096-byte pages.
+
+#include "types.h"
+#include "param.h"
+#include "memlayout.h"
+#include "spinlock.h"
+#include "riscv.h"
+#include "defs.h"
+#include "proc.h"
+
+void freerange(void *pa_start, void *pa_end);
+
+extern char end[]; // first address after kernel.
+                   // defined by kernel.ld.
+
+struct run {
+  struct run *next;
+};
+
+struct {
+  struct spinlock lock;
+  struct run *freelist;
+} kmem;
+
+void
+kinit()
+{
+  initlock(&kmem.lock, "kmem");
+  freerange(end, (void *)PHYSTOP);
+}
+
+void
+freerange(void *pa_start, void *pa_end)
+{
+  char *p;
+  p = (char *)PGROUNDUP((uint64)pa_start);
+  for (; p + PGSIZE <= (char *)pa_end; p += PGSIZE)
+    kfree(p);
+}
+
+// Free the page of physical memory pointed at by pa,
+// which normally should have been returned by a
+// call to kalloc().  (The exception is when
+// initializing the allocator; see kinit above.)
+void
+kfree(void *pa)
+{
+  struct run *r;
+
+  if (((uint64)pa % PGSIZE) != 0 || (char *)pa < end || (uint64)pa >= PHYSTOP)
+    panic("kfree");
+
+  // Fill with junk to catch dangling refs.
+  memset(pa, 1, PGSIZE);
+
+  r = (struct run *)pa;
+
+  acquire(&kmem.lock);
+  r->next = kmem.freelist;
+  kmem.freelist = r;
+  wakeup(&kmem);            // PSI: wake processes waiting for memory
+  release(&kmem.lock);
+}
+
+// Allocate one 4096-byte page of physical memory.
+// Returns a pointer that the kernel can use.
+// Returns 0 if the memory cannot be allocated.
+void *
+kalloc(void)
+{
+  struct run *r;
+  struct proc *p = myproc();
+
+  acquire(&kmem.lock);
+  r = kmem.freelist;
+
+  // PSI: if no memory is available, stall (sleep) until kfree wakes us, and
+  // accumulate the time spent waiting into this process's mem_stall_ticks.
+  if (!r && p) {
+    acquire(&tickslock);
+    p->last_stall_start = ticks;
+    release(&tickslock);
+
+    while (!r) {
+      sleep(&kmem, &kmem.lock);
+      r = kmem.freelist;
+      if (p->killed) {
+        release(&kmem.lock);
+        return 0;
+      }
+    }
+
+    acquire(&tickslock);
+    p->mem_stall_ticks += (ticks - p->last_stall_start);
+    release(&tickslock);
+  }
+
+  if (r)
+    kmem.freelist = r->next;
+  release(&kmem.lock);
+
+  if (r)
+    memset((char *)r, 5, PGSIZE); // fill with junk
+  return (void *)r;
+}
+
+// Number of free physical pages currently on the freelist (kernel monitor).
+uint64
+kfreepages(void)
+{
+  struct run *r;
+  uint64 n = 0;
+  acquire(&kmem.lock);
+  for (r = kmem.freelist; r; r = r->next)
+    n++;
+  release(&kmem.lock);
+  return n;
+}
+
+// Total physical pages the allocator manages (constant after boot).
+uint64
+ktotalpages(void)
+{
+  return (PHYSTOP - PGROUNDUP((uint64)end)) / PGSIZE;
+}
