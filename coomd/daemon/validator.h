@@ -2,9 +2,12 @@
 #define VALIDATOR_H
 
 #include <stdbool.h>
-#include <sys/types.h>
 
-// 이 PID를 죽여도 괜찮은지 안전 검사를 선언합니다.
-bool validator_ok(pid_t pid);
+// Defence-in-depth safety check on an LLM-chosen victim, applied on top of
+// whatever the LLM decided. Returns true if (pid, name) is safe to kill.
+//
+// Because the candidates live inside xv6 (not on this Linux host), the check
+// is name- and pid-based using the bridged xv6 process info — NOT /proc.
+bool validator_ok(int pid, const char *name);
 
 #endif /* VALIDATOR_H */

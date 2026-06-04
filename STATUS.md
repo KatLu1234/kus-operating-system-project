@@ -47,7 +47,9 @@ npm start
 2. 인터페이스가 자동으로 `make clean && make qemu`를 실행해 xv6를 빌드·부팅한다.
 3. 부팅 성공 시 메인 패널이 **콘솔 → 서비스 대시보드**로 전환된다.
    (우상단 `DASHBOARD`/`CONSOLE` 버튼으로 수동 전환 가능)
-4. `statd`(상태 보고)와 `oomd`(OOM 감시)는 **자동 실행**된다.
+4. `statd`(상태 보고)와 `oomd`(OOM 감시)는 **xv6의 `init`이 부팅 시 직접 자동 실행**한다
+   (`user/init.c`). 호스트의 stdin 주입에 의존하지 않으므로, 어떤 실행 경로(인터페이스 /
+   `make qemu` / relay.py)에서도 부팅 즉시 프로세스·CPU·메모리·PSI 보고가 시작된다.
 
 ### 프로세스(서비스) 실행 — 유저가 직접
 - 각 서비스 카드의 `▶ start` 버튼, 또는
@@ -176,7 +178,9 @@ xv6-interface/
   renderer.js    # 대시보드/카드/그래프/팝업/커맨드바
   index.html, styles.css
 coomd/
-  daemon/main.c, validator.c, *_monitor.h, proc_reader.h
-  LLM_client/helper.py
+  daemon/main.c           # 데몬 루프: 브리지 읽기 → 압박 감지 → LLM → 검증/보고
+  daemon/xv6_state.c/.h   # .xv6_state 브리지 파일 파서 (실제 xv6 PSI·프로세스)
+  daemon/validator.c/.h   # xv6 보호 대상(init/sh/oomd/statd/coomd) 방어 심층
+  LLM_client/helper.py    # Upstage Solar victim 선택 (키 없으면 mock)
   host/monitor.py, relay.py
 ```

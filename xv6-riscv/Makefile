@@ -149,6 +149,17 @@ UPROGS=\
 	$U/_statd\
 	$U/_oomd\
 	$U/_memhog\
+	$U/_oomgen\
+	$U/_server\
+	$U/_database\
+	$U/_security\
+	$U/_endpoint\
+	$U/_cache\
+	$U/_logger\
+	$U/_gateway\
+	$U/_scheduler\
+	$U/_analytics\
+	$U/_messaging\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

@@ -21,7 +21,7 @@
 static int
 service_main(int argc, char **argv)
 {
-  int mb = argc > 1 ? atoi(argv[1]) : 6;
+  int mb = argc > 1 ? atoi(argv[1]) : 28;   // ~5 default-size services exhaust RAM
   if (mb < 1)
     mb = 1;
   uint64 bytes = (uint64)mb * 1024 * 1024;

@@ -14,7 +14,6 @@
 #include "kernel/types.h"
 #include "kernel/param.h"
 #include "user/user.h"
-#include "string.h"
 
 #define THRESHOLD 10        // some-pressure threshold in percent (0..100)
 #define MAX_CAND  16

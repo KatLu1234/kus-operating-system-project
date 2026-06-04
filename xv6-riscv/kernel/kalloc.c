@@ -106,6 +106,18 @@ kalloc(void)
   return (void *)r;
 }
 
+// Quick O(1) test: is physical memory exhausted (freelist empty)? Used by the
+// kernel OOM safety net, which runs every timer tick and must stay cheap.
+int
+kmemexhausted(void)
+{
+  int empty;
+  acquire(&kmem.lock);
+  empty = (kmem.freelist == 0);
+  release(&kmem.lock);
+  return empty;
+}
+
 // Number of free physical pages currently on the freelist (kernel monitor).
 uint64
 kfreepages(void)

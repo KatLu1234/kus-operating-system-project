@@ -76,7 +76,6 @@ let qemuLineBuf = '';
 let prevStat = null;          // previous @@STAT sample, for CPU% deltas
 let oomBusy = false;          // guard so we answer one @@OOM_REQ at a time
 let pythonCmd = null;         // resolved interpreter path (or null if missing)
-let monitorsStarted = false;  // guard so we auto-launch statd+oomd only once per boot
 
 const PG_KB = 4;              // xv6 page = 4 KiB
 
@@ -156,7 +155,6 @@ function startQemu() {
 
   qemuLineBuf = '';
   prevStat = null;
-  monitorsStarted = false;
   qemu.stdout.on('data', (b) => {
     const s = b.toString('utf8');
     appendTail(s);
@@ -185,6 +183,11 @@ function startQemu() {
     const m = await sampleMetrics(qemu.pid);
     if (m) send('qemu:metrics', { ...m, timestamp: Date.now() });
   }, 1000);
+
+  // NOTE: statd & oomd are no longer injected from here. xv6's init now launches
+  // them automatically at boot (user/init.c), so kernel status reporting and the
+  // OOM watcher are guaranteed to run regardless of console-injection timing.
+  // The interface just parses the @@STAT / @@OOM_REQ lines they emit.
 }
 
 function stopQemu() {
@@ -235,19 +238,18 @@ function parseOomdLine(line) {
   if (m) {
     send('oom:event', { kind: 'kill', pid: Number(m[1]), signal: 'kill',
                         source: 'xv6-oomd', timestamp: Date.now() });
+    return;
   }
-}
-
-function maybeAutostartMonitors(line) {
-  if (monitorsStarted) return;
-  if (/init: starting sh/.test(line)) {
-    monitorsStarted = true;
-    // Staggered, with a small delay so sh is ready to read stdin first.
-    // statd's arg is the sample period in ticks (~0.1s each). Use 2 (~0.2s,
-    // ~5 Hz) so the dashboard reflects process state changes near-instantly
-    // instead of the 1 s default.
-    setTimeout(() => writeStdin('statd 2 &\n'), 800);   // dashboard feed (~5 Hz)
-    setTimeout(() => writeStdin('oomd &\n'), 1200);     // OOM watcher
+  // Kernel OOM safety net (kalloc deadlock guard). Format:
+  //   [kernel-oom] out of memory: killed pid 6 (database, 40976 KB)
+  // Surface it as a decision so the matching service card turns red, even though
+  // no host/LLM round-trip happened.
+  m = line.match(/\[kernel-oom\].*killed pid (\d+) \(([^,]+),/);
+  if (m) {
+    const pid = Number(m[1]);
+    send('oom:event', { kind: 'decision', source: 'kernel-oom', engine: 'kernel',
+                        victims: [pid], reasoning: `kernel last-resort OOM kill of ${m[2]} (largest process)`,
+                        timestamp: Date.now() });
   }
 }
 
@@ -265,7 +267,6 @@ function routeQemuOutput(chunk) {
       /* other tags (e.g. @@OOM_RESP echo, @@STAT_ERR) are hidden from console */
     } else {
       send('qemu:stdout', line + '\n');                     // ordinary console line
-      maybeAutostartMonitors(line);
       parseOomdLine(line);
     }
   }

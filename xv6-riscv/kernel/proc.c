@@ -77,6 +77,69 @@ procinit(void)
 // Update PSI metrics from current process states. Called from clockintr() on
 // CPU 0 every tick. SOME = at least one process stalled on memory; FULL = at
 // least one stalled and none runnable/running.
+// Number of consecutive timer ticks for which memory has been exhausted *and*
+// at least one process is stalled waiting for it, before the kernel OOM safety
+// net fires. ~10 ticks ≈ 1 s, so this gives the userspace/host LLM OOM path
+// ~3 s to react first; only if it fails to free memory does the kernel kill.
+#define OOM_GRACE_TICKS 30
+
+// Processes the kernel OOM killer must never kill (demo infrastructure). The
+// real memory hogs are the service workloads, which are far larger anyway.
+static int
+oom_protected(struct proc *p)
+{
+  if (p->pid <= 1)                          return 1;   // init
+  if (strncmp(p->name, "sh",    16) == 0)   return 1;   // the shell
+  if (strncmp(p->name, "statd", 16) == 0)   return 1;   // status reporter
+  if (strncmp(p->name, "oomd",  16) == 0)   return 1;   // userspace OOM orchestr.
+  return 0;
+}
+
+// Last-resort kernel OOM killer. Picks the largest-memory killable user process
+// and kills it (marks killed + makes it runnable so it exits and frees its
+// pages), guaranteeing the system can never deadlock waiting on the userspace /
+// host OOM round-trip. Returns the victim pid, or 0 if none. No locks held.
+int
+oom_kill(void)
+{
+  struct proc *victim = 0;
+  uint64 best = 0;
+
+  for (struct proc *p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if ((p->state == RUNNING || p->state == RUNNABLE || p->state == SLEEPING) &&
+        !p->killed && !oom_protected(p) && p->sz > best) {
+      best = p->sz;
+      victim = p;
+    }
+    release(&p->lock);
+  }
+
+  if (!victim)
+    return 0;
+
+  int vpid = 0;
+  char vname[16];
+  acquire(&victim->lock);
+  // Re-validate under the lock: it may have changed since the scan.
+  if (victim->state != UNUSED && victim->state != ZOMBIE &&
+      !victim->killed && !oom_protected(victim)) {
+    victim->killed = 1;
+    if (victim->state == SLEEPING)
+      victim->state = RUNNABLE;            // wake it so it can run and exit
+    vpid = victim->pid;
+    safestrcpy(vname, victim->name, sizeof(vname));
+  }
+  release(&victim->lock);
+
+  if (vpid) {
+    wakeup(&kmem);                         // nudge other stalled allocators
+    printf("[kernel-oom] out of memory: killed pid %d (%s, %d KB)\n",
+           vpid, vname, (int)(best / 1024));
+  }
+  return vpid;
+}
+
 void
 update_psi(void)
 {
@@ -104,6 +167,21 @@ update_psi(void)
   some_avg10 = (some * 1024 + 99 * some_avg10) / 100;
   full_avg10 = (full * 1024 + 99 * full_avg10) / 100;
   release(&psi_lock);
+
+  // Kernel OOM safety net. If processes are actively stalled waiting for memory
+  // and the freelist has been empty for the whole grace window, the userspace /
+  // host OOM path has failed to react in time — kill the biggest process here so
+  // the system never deadlocks. Reset the moment pressure clears (e.g. when the
+  // LLM-driven oomd freed memory itself). No locks are held at this point.
+  static int oom_grace = 0;
+  if (stalled > 0 && kmemexhausted()) {
+    if (++oom_grace >= OOM_GRACE_TICKS) {
+      oom_grace = 0;
+      oom_kill();
+    }
+  } else {
+    oom_grace = 0;
+  }
 }
 
 // Copy PSI statistics into the provided structure.

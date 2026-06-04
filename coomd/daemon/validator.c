@@ -1,49 +1,41 @@
+// validator.c — last-line safety net on the LLM's victim choice.
+//
+// The old version read this Linux host's /proc/<pid>/comm and protected
+// Linux daemons (systemd, sshd, dbus). That was wrong: the candidates are
+// xv6 processes living inside QEMU, so there is no matching /proc entry here.
+//
+// This version validates against the xv6 process name we already carry in the
+// candidate (bridged out of the kernel), and protects the processes that keep
+// the xv6 demo alive: init, the shell, and our own monitor/orchestrator
+// programs.
+
 #include "validator.h"
-#include <stdio.h>
-#include <unistd.h>
+
 #include <string.h>
 
-// 절대로 AI가 건드리면 안 되는 리눅스의 생명줄 프로세스 이름들입니다.
+// xv6 processes that must never be killed, regardless of what the LLM picks.
 static const char *PROTECTED_NAMES[] = {
-    "systemd",
-    "sshd",
-    "dbus-daemon",
-    "init",
-    "coomd", // 데몬 자신도 보호 대상
-    NULL
+    "init",         // pid 1 — the xv6 init process
+    "sh",           // the interactive shell
+    "oomd",         // the in-kernel OOM orchestrator (does the real killing)
+    "statd",        // the status reporter feeding our bridge file
+    "coomd",        // this daemon's xv6-side namesake, if present
+    NULL,
 };
 
-bool validator_ok(pid_t pid) {
-    // 1. 컴퓨터의 심장인 PID 1 (init) 프로세스는 무조건 통과시킵니다.
-    if (pid <= 1) {
+bool
+validator_ok(int pid, const char *name)
+{
+    // init (and any impossibly-low pid) is always off-limits.
+    if (pid <= 1)
         return false;
-    }
 
-    // 2. 관리자 본인(coomd)이 자살하는 어처구니없는 참사를 방지합니다.
-    if (pid == getpid()) {
-        return false;
-    }
-
-    char comm[16] = {0};
-    char path[64];
-    snprintf(path, sizeof(path), "/proc/%d/comm", pid);
-    
-    FILE *f = fopen(path, "r");
-    if (!f) {
-        // 이미 프로세스가 스스로 꺼진 상태라면 안 죽여도 되니 패스합니다.
-        return true; 
-    }
-    
-    // 프로세스의 실제 이름을 읽어와서 화이트리스트와 비교합니다.
-    if (fscanf(f, "%15s", comm) == 1) {
+    if (name) {
         for (int i = 0; PROTECTED_NAMES[i] != NULL; i++) {
-            if (strcmp(comm, PROTECTED_NAMES[i]) == 0) {
-                fclose(f);
-                return false; // 여기에 등록된 이름이면 절대 죽이지 못하게 막습니다!
-            }
+            if (strcmp(name, PROTECTED_NAMES[i]) == 0)
+                return false;
         }
     }
-    
-    fclose(f);
-    return true; 
+
+    return true;
 }

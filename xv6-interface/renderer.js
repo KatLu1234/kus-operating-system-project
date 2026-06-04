@@ -321,46 +321,46 @@
   // the kernel-reported state: gray = not running, green = running, red = killed
   // by the OOM killer. State is refreshed every statd @@STAT report.
   const SERVICES = [
-    { id: 'database', label: 'DATABASE', icon: '🗄', mb: 24, form:
+    { id: 'database', label: 'DATABASE', icon: '🗄', mb: 38, form:
       `<div class="vf-line">SELECT * FROM orders LIMIT 3;</div>
        <div class="vf-grid3"><span>#1042</span><span>paid</span><span>$42.00</span>
          <span>#1043</span><span>paid</span><span>$8.50</span>
          <span>#1044</span><span>ship</span><span>$120.0</span></div>
        <div class="vf-foot2">conns 12 · 340 qps</div>` },
-    { id: 'server', label: 'WEB SERVER', icon: '🌐', mb: 12, form:
+    { id: 'server', label: 'WEB SERVER', icon: '🌐', mb: 32, form:
       `<div class="vf-line ok">GET /api/v1/users 200 12ms</div>
        <div class="vf-line ok">POST /api/orders 201 31ms</div>
        <div class="vf-line warn">GET /api/cart 503 --</div>
        <div class="vf-foot2">1.2k rps · p99 38ms</div>` },
-    { id: 'security', label: 'SECURITY', icon: '🛡', mb: 10, form:
+    { id: 'security', label: 'SECURITY', icon: '🛡', mb: 30, form:
       `<div class="vf-badges"><span class="vf-tag ok">TLS ✓</span><span class="vf-tag ok">WAF ✓</span></div>
        <div class="vf-line">sessions 318 · mfa 96%</div>
        <div class="vf-line warn">blocked 7 intrusions</div>` },
-    { id: 'endpoint', label: 'ENDPOINT', icon: '🔌', mb: 6, form:
+    { id: 'endpoint', label: 'ENDPOINT', icon: '🔌', mb: 30, form:
       `<div class="vf-line">/api/v1/payments</div>
        <div class="vf-line">/api/v1/users</div>
        <div class="vf-line">/api/v1/inventory</div>
        <div class="vf-foot2">14 routes · healthy</div>` },
-    { id: 'cache', label: 'CACHE', icon: '⚡', mb: 28, form:
+    { id: 'cache', label: 'CACHE', icon: '⚡', mb: 42, form:
       `<div class="vf-bar"><i style="width:92%"></i></div>
        <div class="vf-foot2">hit 92% · 2.1M keys</div>` },
-    { id: 'logger', label: 'LOGGER', icon: '📝', mb: 4, form:
+    { id: 'logger', label: 'LOGGER', icon: '📝', mb: 26, form:
       `<div class="vf-line dim">12:01:03 INFO request ok</div>
        <div class="vf-line dim">12:01:04 WARN slow query</div>
        <div class="vf-line dim">12:01:05 INFO flush 4k</div>` },
-    { id: 'gateway', label: 'GATEWAY', icon: '🚪', mb: 8, form:
+    { id: 'gateway', label: 'GATEWAY', icon: '🚪', mb: 28, form:
       `<div class="vf-line">/* → server</div>
        <div class="vf-line">/auth → security</div>
        <div class="vf-line">/q → messaging</div>
        <div class="vf-foot2">3 upstreams</div>` },
-    { id: 'scheduler', label: 'SCHEDULER', icon: '⏱', mb: 5, form:
+    { id: 'scheduler', label: 'SCHEDULER', icon: '⏱', mb: 28, form:
       `<div class="vf-line">▶ nightly-report 02:00</div>
        <div class="vf-line">▶ cleanup-temp */15</div>
        <div class="vf-foot2">8 jobs queued</div>` },
-    { id: 'analytics', label: 'ANALYTICS', icon: '📊', mb: 20, form:
+    { id: 'analytics', label: 'ANALYTICS', icon: '📊', mb: 34, form:
       `<div class="vf-chart"><i style="height:40%"></i><i style="height:70%"></i><i style="height:55%"></i><i style="height:90%"></i><i style="height:65%"></i></div>
        <div class="vf-foot2">3.4M events/min</div>` },
-    { id: 'messaging', label: 'MESSAGING', icon: '✉', mb: 14, form:
+    { id: 'messaging', label: 'MESSAGING', icon: '✉', mb: 32, form:
       `<div class="vf-line">queue: orders depth 1.2k</div>
        <div class="vf-line">queue: emails depth 340</div>
        <div class="vf-foot2">consumers 6</div>` },
@@ -387,7 +387,8 @@
     } else {
       badge.textContent = 'OFFLINE';
       // Show the service's typical footprint so its memory weight is visible
-      // even before launch (cache ~28 MB vs logger ~4 MB).
+      // even before launch (cache ~42 MB vs logger ~26 MB). Sized so ~5 running
+      // services exceed xv6's ~127 MB ceiling and trigger the OOM killer.
       meta.textContent = card.dataset.mb ? `idle · ~${card.dataset.mb} MB` : '—';
       launch.classList.remove('hidden'); stop.classList.add('hidden');
     }
