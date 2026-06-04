@@ -1,0 +1,7 @@
+# build artifacts
+bin/
+daemon/*.o
+
+# live xv6 state bridge file (written by the interface at runtime)
+.xv6_state
+.xv6_state.tmp
