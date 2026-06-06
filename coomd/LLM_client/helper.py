@@ -35,10 +35,19 @@ import json
 # (python-dotenv가 설치돼 있으면 사용, 없으면 그냥 환경변수에서 읽음)
 import os
 try:
-    from dotenv import load_dotenv
-    # 이 스크립트(helper.py)와 같은 폴더의 .env를 확실히 찾아서 읽는다
+    from dotenv import load_dotenv, find_dotenv
+    # .env를 여러 위치에서 찾는다:
+    #   1) 이 스크립트(helper.py)와 같은 폴더        (coomd/LLM_client/.env)
+    #   2) 그 상위 폴더 (coomd/)                       (coomd/.env)  ← 실제 위치
+    #   3) 현재 작업 디렉터리에서 위로 탐색            (어디서 실행하든)
     _here = os.path.dirname(os.path.abspath(__file__))
-    load_dotenv(os.path.join(_here, ".env"))
+    _candidates = [
+        os.path.join(_here, ".env"),
+        os.path.join(os.path.dirname(_here), ".env"),
+    ]
+    _found = next((p for p in _candidates if os.path.isfile(p)), "") or find_dotenv(usecwd=True)
+    if _found:
+        load_dotenv(_found)
 except ImportError:
     pass
 
@@ -69,9 +78,10 @@ RULES:
 - Honor the user policy. If the policy says "never kill X", do not select X.
 - Prefer killing processes the user marked as low-priority or "fine to kill".
 - Free enough memory to meet target_free_mb when possible.
+- ALWAYS write the "reasoning" field in English, even if the policy is in another language.
 
 You MUST respond with ONLY a JSON object, no other text:
-{"victims": [pid, ...], "reasoning": "short explanation", "confidence": 0.0~1.0}
+{"victims": [pid, ...], "reasoning": "short explanation in English", "confidence": 0.0~1.0}
 """
 
 
@@ -135,9 +145,9 @@ def ask_mock(policy, candidates, target_free_mb):
 
     return {
         "victims": chosen,
-        "reasoning": "[MOCK MODE — 가짜 응답] API 키가 없어 정책을 해석하지 못함. "
-                     "시스템 프로세스를 제외하고 메모리를 가장 많이 쓰는 프로세스를 선택함. "
-                     "실제 정책 기반 선택은 UPSTAGE_API_KEY를 .env에 넣으면 동작함.",
+        "reasoning": "[MOCK MODE] No API key, so the policy was not interpreted. "
+                     "Selected the largest-memory process excluding system processes. "
+                     "Set UPSTAGE_API_KEY in .env for real policy-based selection.",
         "confidence": 0.3,
     }
 
@@ -155,7 +165,7 @@ def decide_victims(policy, candidates, target_free_mb=500):
         return ask_mock(policy, candidates, target_free_mb)
     except Exception as e:
         result = ask_mock(policy, candidates, target_free_mb)
-        result["reasoning"] = f"[FALLBACK] Solar 호출 실패({e}), mock 사용. " + result.get("reasoning", "")
+        result["reasoning"] = f"[FALLBACK] Solar call failed ({e}), using mock. " + result.get("reasoning", "")
         return result
 
 

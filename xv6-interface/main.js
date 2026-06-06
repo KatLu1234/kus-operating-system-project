@@ -496,7 +496,8 @@ async function decideOomVictims(req) {
       ? `The operator described this server's purpose as: "${serverPurpose}". ` +
         'Honor it: protect processes essential to that purpose and prefer killing ones that are not.'
       : '',
-    'Respond with ONLY a JSON object: {"victims":[pid,...],"reasoning":"short"}.',
+    'Always write the "reasoning" field in English, even if the purpose is in another language.',
+    'Respond with ONLY a JSON object: {"victims":[pid,...],"reasoning":"short, in English"}.',
   ].filter(Boolean).join('\n');
   const user = JSON.stringify({ psi: req.psi, server_purpose: serverPurpose, candidates });
 
