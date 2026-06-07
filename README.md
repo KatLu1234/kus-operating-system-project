@@ -1,5 +1,10 @@
 # Conversational OOM Killer
 
+> 📌 **이 프로젝트는 두 브랜치로 구성됩니다 / This project spans two branches:**
+> - **`main`** — Linux 데몬(`coomd`) · 정책 부합률 평가(100%) · 최종 문서(Technical Report / Development Process)
+> - **`xv6-interface-d`** — xv6 커널 PSI 구현 + Electron 실시간 모니터 (라이브 데모 / live demo)
+
+
 > An LLM-guided replacement for Linux's OOM killer, driven by a user-written natural-language priority policy.
 
 **Direction:** B — LLM for OS
