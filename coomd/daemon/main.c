@@ -56,9 +56,11 @@ static int ask_llm_helper(const char *policy,
     close(from_child[1]);
     char input_json[IPC_BUF_SIZE];
     int off = 0;
+    char safe_policy[2048];
+    json_sanitize(policy, safe_policy, sizeof(safe_policy));
     off += snprintf(input_json + off, sizeof(input_json) - off,
                     "{\"policy\": \"%s\", \"target_free_mb\": %d, \"candidates\": [",
-                    policy, target_free_mb);
+                    safe_policy, target_free_mb);
     for (int i = 0; i < count; i++) {
         char safe_comm[64];
         json_sanitize(candidates[i].comm, safe_comm, sizeof(safe_comm));
@@ -113,6 +115,34 @@ static int ask_llm_helper(const char *policy,
     return victim_count;
 }
 
+/*
+ * --policy 로 지정된 파일에서 자연어 정책을 읽어온다.
+ * 성공하면 buf 에 내용을 채우고 buf 포인터를 반환,
+ * 실패(경로 미지정 / 파일 없음 / 빈 파일)하면 NULL 을 반환한다.
+ */
+static const char *load_policy_file(const char *path, char *buf, size_t buf_size) {
+    if (!path) {
+        return NULL;
+    }
+    FILE *pf = fopen(path, "r");
+    if (!pf) {
+        fprintf(stderr, "⚠️ 정책 파일을 열 수 없어 기본 정책을 사용합니다: %s\n", path);
+        return NULL;
+    }
+    size_t n = fread(buf, 1, buf_size - 1, pf);
+    fclose(pf);
+    buf[n] = '\0';
+    /* 끝쪽 개행/공백 정리 */
+    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r' || buf[n - 1] == ' ')) {
+        buf[--n] = '\0';
+    }
+    if (n == 0) {
+        fprintf(stderr, "⚠️ 정책 파일이 비어 있어 기본 정책을 사용합니다: %s\n", path);
+        return NULL;
+    }
+    return buf;
+}
+
 int main(int argc, char *argv[]) {
     int opt;
     char *policy_path = NULL;
@@ -134,15 +164,27 @@ int main(int argc, char *argv[]) {
                 return EXIT_FAILURE;
         }
     }
-    const char *policy_text =
+
+    /* 기본 내장 정책 (--policy 미지정 또는 파일 읽기 실패 시 fallback) */
+    const char *default_policy =
         "I am coding. Never kill VS Code, gcc, or firefox. "
         "Chrome tabs and music apps are fine to kill first.";
+
+    /* --policy 파일을 우선 사용하고, 실패하면 기본 정책으로 fallback */
+    static char policy_buf[2048];
+    const char *policy_text = load_policy_file(policy_path, policy_buf, sizeof(policy_buf));
+    if (!policy_text) {
+        policy_text = default_policy;
+    }
+
     printf("\n==================================================\n");
     printf("[R4 Integration] coomd (Conversational OOM) 데몬 구동 시작\n");
     printf("==================================================\n");
     printf("  PSI 감시 임계치 : %.2f%%\n", threshold);
-    if (policy_path) {
-        printf("  사용자 정책 파일: %s\n", policy_path);
+    if (policy_path && policy_text != default_policy) {
+        printf("  사용자 정책 파일: %s (로드 성공)\n", policy_path);
+    } else if (policy_path) {
+        printf("  사용자 정책 파일: %s (로드 실패 → 기본 정책)\n", policy_path);
     } else {
         printf("  사용자 정책 파일: 기본값 사용 (내장 정책)\n");
     }
